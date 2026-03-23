@@ -111,17 +111,22 @@ _Tracer bullet — thinnest possible end-to-end proof._
 
 ## Phase 6: Agent Integration
 
-- [x] Determined MCP transport: HTTP (streamable-http) — OpenClaw supports it natively
-- [x] Configured ag-1 and ag-2: `openclaw.json` → `plugins.entries.mcp-integration.config.servers.agent-memory`
-- [x] Verified tool discovery: ag-1 sees `store_memory`, `recall`, `memory_status` from vm-services:8888
-- [x] Verified tool discovery: ag-2 sees same tools
-- [x] Cross-agent sharing verified via MCP (Phase 5 test: ag-1 stores → ag-2 recalls)
-- [ ] Test full agent session lifecycle with real OpenClaw sessions (manual — run agent, verify memories persist)
-- [ ] Auto-capture pattern: needs OpenClaw agent prompt/hook to call store_memory on each turn
-- [ ] Session-start injection: needs OpenClaw agent prompt to call recall at session start
-- [ ] Monitor: memory count, extraction latency, recall quality (after real usage)
+- [x] Researched OpenClaw integration: not MCP plugin-based, uses hooks system
+- [x] Removed incorrect `mcp-integration` plugin config from both agents
+- [x] Built `memory-sync` OpenClaw hook (`hook/memory-sync/`)
+  - Listens to: `command:new`, `command:reset`, `message:sent`
+  - On session end: stores conversation summary via memory server HTTP API
+  - On message sent: continuous capture of agent responses
+  - Config via `hooks.internal.entries.memory-sync.env` in openclaw.json
+- [ ] Install hook on ag-1 and ag-2 (`openclaw hooks install`)
+- [ ] Configure hook env: `MEMORY_API_URL`, `AGENT_ID`
+- [ ] Test full session lifecycle: conversation → /new → verify memory stored
+- [ ] Test continuous capture: agent responds → verify each turn stored
+- [ ] Session-start recall: add to agent system prompt or workspace BOOT.md
+- [ ] Test cross-agent sharing: ag-1 learns → ag-2 benefits in separate session
+- [ ] Monitor: memory count, extraction latency, recall quality
 
-**Infrastructure complete: 2026-03-23. Awaiting real agent sessions for validation.**
+**Hook built: 2026-03-23. Awaiting installation and real agent session testing.**
 
 ---
 
