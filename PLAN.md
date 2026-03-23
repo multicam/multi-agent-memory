@@ -12,32 +12,33 @@
 
 _Tracer bullet — thinnest possible end-to-end proof._
 
-- [ ] PostgreSQL + pgvector on workstation
-  - Install PostgreSQL 16, enable pgvector extension
-  - Create `agent_memory` database, `memory_user` role
-  - `pg_hba.conf`: allow vm-services, agent VMs, Tailscale subnet
+- [x] PostgreSQL + pgvector on workstation
+  - PostgreSQL 16.13, pgvector 0.6.0 installed
+  - `agent_memory` database, `memory_user` role created
+  - `pg_hba.conf`: vm-services, agent VMs, Tailscale subnet (scram-sha-256)
   - `listen_addresses = '*'`
-- [ ] Schema migration `001_initial.sql`
-  - `memories` table (id, agent_id, memory_type, content, embedding vector(768), importance, tags, source_session, shared, shared_by, provenance, created_at)
-  - `shared_events` table (id, event_type, payload, created_by, created_at)
-  - `schema_migrations` table (filename, applied_at)
-  - Indexes: agent+time, HNSW on embedding, GIN on tags
-- [ ] Python project scaffold
-  - `uv init`, add deps: fastmcp, psycopg[binary], sentence-transformers, spacy, anthropic
-  - `src/config.py` — env-based config (PG URL, NAS path, extraction model)
-  - `src/server.py` — FastMCP entry point
-  - `src/storage/postgres.py` — PG read/write
-- [ ] MCP tools: `store_memory(text, agent_id, session_id)` → PG insert
-- [ ] MCP tools: `recall(query, agent_id, limit)` → select recent memories (recency only, no embeddings yet)
-- [ ] MCP tools: `memory_status()` → health check (PG connected, NAS mounted)
-- [ ] Deploy to vm-services
-  - Clone repo to `/opt/multi-agent-memory`
-  - `uv sync` for venv
-  - `deploy/agent-memory.service` — systemd unit
-  - `deploy/deploy.sh` — git pull + uv sync + restart
-- [ ] Verify: request from ag-1 → vm-services:8888 → PG on workstation → result
+- [x] Schema migration `001_initial.sql`
+  - `memories` table with vector(768), shared namespace columns, provenance JSONB
+  - `shared_events` table (append-only inter-agent coordination)
+  - `schema_migrations` table (idempotent apply)
+  - Indexes: agent+time, HNSW on embedding, GIN on tags, partial on shared
+- [x] Python project scaffold
+  - `uv init`, deps: fastmcp 3.1.1, psycopg 3.3.3
+  - `src/config.py` — env-based config
+  - `src/server.py` — FastMCP entry point (streamable-http transport)
+  - `src/storage/postgres.py` — PG read/write with dict_row
+- [x] MCP tools: `store_memory(text, agent_id, session_id)` → PG insert, returns UUID
+- [x] MCP tools: `recall(query, agent_id, limit)` → recency-based recall (semantic search in Phase 3)
+- [x] MCP tools: `memory_status()` → health check (PG + NAS status)
+- [x] Deploy to vm-services
+  - Ansible role `memory-server` in tgds-office-config
+  - `services-install.yml` playbook: nas + agent-memory + git-credentials + memory-server
+  - Cloned via HTTPS to `/opt/multi-agent-memory`
+  - systemd service enabled and running (94 MB RAM)
+  - `deploy/deploy.sh` for upgrades
+- [x] Verified: ag-1 → vm-services:8888 → PG on workstation → store + recall + status all passing
 
-**Done when:** an HTTP request from ag-1 stores a memory and retrieves it back through the MCP server running on vm-services.
+**Completed: 2026-03-23. All Phase 1 tests passing.**
 
 ---
 
