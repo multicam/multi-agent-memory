@@ -60,16 +60,20 @@ _Tracer bullet — thinnest possible end-to-end proof._
 
 ## Phase 3: Embeddings + Semantic Recall
 
-- [ ] `src/embeddings.py` — SentenceTransformers wrapper (nomic-embed-text-v1.5, 768-dim)
-- [ ] Model loaded once at server startup, kept in memory (~548 MB)
-- [ ] `store_memory` generates embedding, stores in PG `memories.embedding`
-- [ ] `recall` uses cosine similarity (`<=>` operator) via HNSW index
-- [ ] Similarity threshold parameter (default 0.7)
-- [ ] JSONL record does NOT store embeddings (re-generated on rebuild)
-- [ ] Update `rebuild_index.py` to generate embeddings during replay
-- [ ] Verify: `recall("nginx configuration")` returns relevant memory, not unrelated text
+- [x] `src/embeddings.py` — SentenceTransformers wrapper (nomic-embed-text-v1.5, 768-dim)
+- [x] Model loaded once at server startup (~548 MB, ~10s load time)
+- [x] `store_memory` generates embedding, stores in PG `memories.embedding`
+- [x] `recall` uses cosine similarity (`<=>` operator) via HNSW index, falls back to recency
+- [x] Similarity threshold parameter (default 0.3)
+- [x] JSONL record does NOT store embeddings (re-generated on rebuild)
+- [x] `rebuild_index.py` generates embeddings during replay (`--no-embeddings` to skip)
+- [x] Verified: `recall("nginx configuration")` → nginx memory ranked first
+- [x] Verified: `recall("what package manager")` → uv memory ranked first
+- [x] Fixed: vm-services CPU type changed from qemu64 to host (required for NumPy/torch)
+- [x] Fixed: secrets moved to gitignored `secrets.yml` (HF_TOKEN, PG password)
+- [x] Added `einops` dependency (required by nomic model)
 
-**Done when:** recall returns semantically ranked results from pgvector.
+**Completed: 2026-03-23. All Phase 3 tests passing.**
 
 ---
 
