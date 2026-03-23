@@ -3,14 +3,16 @@
 
 Reads all JSONL records from NAS and inserts into PG.
 Skips records that already exist (ON CONFLICT DO NOTHING).
-Does NOT re-extract facts — uses stored data as-is.
+Generates embeddings for each record (JSONL doesn't store them).
+Does NOT re-extract facts — uses stored extraction data as-is.
 """
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 
 from src.config import Config
+from src.embeddings import Embedder
 from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
 
@@ -18,6 +20,7 @@ from src.storage.postgres import PGStorage
 def main():
     parser = argparse.ArgumentParser(description="Rebuild PG index from JSONL files")
     parser.add_argument("--dry-run", action="store_true", help="Count records without inserting")
+    parser.add_argument("--no-embeddings", action="store_true", help="Skip embedding generation (faster)")
     args = parser.parse_args()
 
     config = Config.from_env()
@@ -35,16 +38,23 @@ def main():
         print("Dry run — no changes made")
         return
 
+    embedder = None
+    if not args.no_embeddings:
+        embedder = Embedder()
+        embedder.load()
+        print(f"Embedding model loaded: {embedder.model_name}")
+
     pg.connect()
     before = pg.count()
-
-    inserted = 0
-    skipped = 0
     errors = 0
 
-    for r in records:
+    for i, r in enumerate(records):
         try:
             created_at = datetime.fromisoformat(r["timestamp"])
+            embedding = None
+            if embedder:
+                embedding = embedder.embed(r["content"])
+
             pg.store(
                 memory_id=r["id"],
                 text=r["content"],
@@ -52,23 +62,22 @@ def main():
                 session_id=r.get("session_id", "unknown"),
                 created_at=created_at,
                 memory_type=r.get("type", "episodic"),
+                embedding=embedding,
             )
-            inserted += 1
+
+            if (i + 1) % 100 == 0:
+                print(f"  {i + 1}/{len(records)} processed...")
+
         except Exception as e:
-            # ON CONFLICT DO NOTHING means duplicates silently skip
-            # Real errors get logged
             if "duplicate" not in str(e).lower():
                 print(f"  ERROR on {r.get('id', '?')}: {e}")
                 errors += 1
-            else:
-                skipped += 1
 
     after = pg.count()
     pg.close()
 
     print(f"Processed: {len(records)}")
-    print(f"Inserted:  {after - before}")
-    print(f"Skipped:   {skipped} (already in PG)")
+    print(f"New rows:  {after - before}")
     print(f"Errors:    {errors}")
 
 

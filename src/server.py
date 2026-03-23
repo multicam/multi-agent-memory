@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from fastmcp import FastMCP
 
 from src.config import Config
+from src.embeddings import Embedder
 from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
 
@@ -16,6 +17,7 @@ log = logging.getLogger("agent-memory")
 config = Config.from_env()
 pg = PGStorage(config.pg_url)
 jsonl = JSONLStorage(config.nas_path)
+embedder = Embedder()
 
 mcp = FastMCP(
     "multi-agent-memory",
@@ -43,6 +45,13 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     memory_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
+    # Generate embedding
+    embedding = None
+    try:
+        embedding = embedder.embed(text)
+    except Exception as e:
+        log.warning(f"Embedding generation failed: {e}")
+
     record = {
         "id": memory_id,
         "agent_id": agent_id,
@@ -54,6 +63,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     }
 
     # Write-ahead: JSONL first (durable), then PG (best-effort)
+    # JSONL does NOT store embeddings (re-generated on rebuild)
     jsonl_ok = False
     try:
         jsonl.append(record=record, agent_id=agent_id, session_id=session_id)
@@ -69,6 +79,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
             agent_id=agent_id,
             session_id=session_id,
             created_at=now,
+            embedding=embedding,
         )
         pg_ok = True
     except Exception as e:
@@ -92,23 +103,33 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
 
 @mcp.tool()
 def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
-    """Search an agent's memories.
+    """Search an agent's memories by semantic similarity.
 
     Args:
-        query: What to search for (used for semantic search in later phases).
+        query: Natural language query to search for.
         agent_id: Which agent's memories to search.
         limit: Maximum number of results to return.
 
     Returns:
-        List of matching memory records, most recent first.
+        List of matching memory records, ranked by relevance.
     """
     if not agent_id.strip():
         return [{"error": "agent_id is required"}]
 
     try:
-        return pg.recall(query=query, agent_id=agent_id, limit=limit)
+        query_embedding = embedder.embed(query)
+        results = pg.recall_semantic(
+            query_embedding=query_embedding,
+            agent_id=agent_id,
+            limit=limit,
+        )
+        # Fall back to recency if no semantic results
+        if not results:
+            results = pg.recall(query=query, agent_id=agent_id, limit=limit)
+        return results
     except Exception as e:
-        return [{"error": str(e)}]
+        log.warning(f"Semantic recall failed, falling back to recency: {e}")
+        return pg.recall(query=query, agent_id=agent_id, limit=limit)
 
 
 @mcp.tool()
@@ -116,22 +137,22 @@ def memory_status() -> dict:
     """Check the health of the memory system.
 
     Returns:
-        Status of PostgreSQL connection and NAS mount.
+        Status of PostgreSQL connection, NAS mount, and embedding model.
     """
     return {
         "pg": "connected" if pg.is_connected() else "disconnected",
         "nas": "mounted" if jsonl.is_mounted() else "unmounted",
         "nas_path": config.nas_path,
+        "embedding_model": embedder.model_name,
     }
 
 
 def main():
     pg.connect()
-    log.info("Connected to PostgreSQL")
-    log.info(f"NAS path: {config.nas_path} (mounted: {jsonl.is_mounted()})")
-    log.info(f"Starting MCP server on {config.server_host}:{config.server_port}")
+    embedder.load()
     print(f"Connected to PostgreSQL")
     print(f"NAS path: {config.nas_path} (mounted: {jsonl.is_mounted()})")
+    print(f"Embedding model: {embedder.model_name} ({embedder.dimensions}-dim)")
     print(f"Starting MCP server on {config.server_host}:{config.server_port}")
     mcp.run(transport="streamable-http", host=config.server_host, port=config.server_port)
 
