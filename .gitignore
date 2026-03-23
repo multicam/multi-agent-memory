@@ -1,2 +1,6 @@
 .idea/
 thoughts/
+.venv/
+.env
+__pycache__/
+*.pyc

@@ -1,0 +1,15 @@
+[Unit]
+Description=Multi-Agent Memory MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=tgds
+WorkingDirectory=/opt/multi-agent-memory
+EnvironmentFile=/opt/multi-agent-memory/.env
+ExecStart=/opt/multi-agent-memory/.venv/bin/python -m src.server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
