@@ -4,11 +4,12 @@
 Reads all JSONL records from NAS and inserts into PG.
 Skips records that already exist (ON CONFLICT DO NOTHING).
 Generates embeddings for each record (JSONL doesn't store them).
-Does NOT re-extract facts — uses stored extraction data as-is.
+Uses cached extractions from JSONL (no LLM calls needed).
 """
 
 import argparse
 import sys
+import uuid
 from datetime import datetime
 
 from src.config import Config
@@ -51,10 +52,23 @@ def main():
     for i, r in enumerate(records):
         try:
             created_at = datetime.fromisoformat(r["timestamp"])
+
+            # Embed the episodic content
             embedding = None
             if embedder:
                 embedding = embedder.embed(r["content"])
 
+            # Build provenance from cached extraction
+            extraction = r.get("extraction", {})
+            provenance = None
+            if extraction:
+                provenance = {
+                    "extraction_model": extraction.get("model", ""),
+                    "extraction_status": extraction.get("status", "rebuilt"),
+                    "extracted_at": extraction.get("extracted_at", ""),
+                }
+
+            # Store episodic memory
             pg.store(
                 memory_id=r["id"],
                 text=r["content"],
@@ -63,7 +77,25 @@ def main():
                 created_at=created_at,
                 memory_type=r.get("type", "episodic"),
                 embedding=embedding,
+                provenance=provenance,
             )
+
+            # Store extracted facts as semantic rows (from cached extraction)
+            facts = extraction.get("facts", [])
+            if facts:
+                fact_embeddings = None
+                if embedder:
+                    fact_embeddings = [embedder.embed(f) for f in facts]
+
+                pg.store_facts(
+                    facts=facts,
+                    agent_id=r["agent_id"],
+                    session_id=r.get("session_id", "unknown"),
+                    source_memory_id=r["id"],
+                    created_at=created_at,
+                    embeddings=fact_embeddings,
+                    provenance=provenance,
+                )
 
             if (i + 1) % 100 == 0:
                 print(f"  {i + 1}/{len(records)} processed...")

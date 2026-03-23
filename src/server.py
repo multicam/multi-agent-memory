@@ -1,7 +1,6 @@
 """Multi-agent memory MCP server."""
 
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 
@@ -9,6 +8,7 @@ from fastmcp import FastMCP
 
 from src.config import Config
 from src.embeddings import Embedder
+from src.extraction.facts import FactExtractor
 from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
 
@@ -18,6 +18,10 @@ config = Config.from_env()
 pg = PGStorage(config.pg_url)
 jsonl = JSONLStorage(config.nas_path)
 embedder = Embedder()
+extractor = FactExtractor(
+    api_key=config.anthropic_api_key,
+    ollama_base_url=config.ollama_base_url,
+)
 
 mcp = FastMCP(
     "multi-agent-memory",
@@ -27,7 +31,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def store_memory(text: str, agent_id: str, session_id: str) -> dict:
-    """Store a memory for an agent.
+    """Store a memory for an agent. Extracts facts and generates embeddings automatically.
 
     Args:
         text: The memory content to store.
@@ -35,7 +39,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         session_id: Current session identifier.
 
     Returns:
-        The stored memory record with its ID.
+        The stored memory record with its ID and extraction results.
     """
     if not text.strip():
         return {"error": "text cannot be empty"}
@@ -52,6 +56,15 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     except Exception as e:
         log.warning(f"Embedding generation failed: {e}")
 
+    # Extract facts
+    extraction = extractor.extract(text)
+    provenance = {
+        "extraction_model": extraction.model,
+        "extraction_status": extraction.status,
+        "extracted_at": extraction.extracted_at,
+    }
+
+    # Build JSONL record (includes extraction, excludes embeddings)
     record = {
         "id": memory_id,
         "agent_id": agent_id,
@@ -60,10 +73,10 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         "content": text,
         "session_id": session_id,
         "metadata": {},
+        "extraction": extraction.to_dict(),
     }
 
     # Write-ahead: JSONL first (durable), then PG (best-effort)
-    # JSONL does NOT store embeddings (re-generated on rebuild)
     jsonl_ok = False
     try:
         jsonl.append(record=record, agent_id=agent_id, session_id=session_id)
@@ -73,6 +86,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
 
     pg_ok = False
     try:
+        # Store the episodic memory
         pg.store(
             memory_id=memory_id,
             text=text,
@@ -80,7 +94,27 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
             session_id=session_id,
             created_at=now,
             embedding=embedding,
+            provenance=provenance,
         )
+
+        # Store extracted facts as separate semantic rows
+        if extraction.facts:
+            fact_embeddings = None
+            try:
+                fact_embeddings = [embedder.embed(f) for f in extraction.facts]
+            except Exception as e:
+                log.warning(f"Fact embedding failed: {e}")
+
+            pg.store_facts(
+                facts=extraction.facts,
+                agent_id=agent_id,
+                session_id=session_id,
+                source_memory_id=memory_id,
+                created_at=now,
+                embeddings=fact_embeddings,
+                provenance=provenance,
+            )
+
         pg_ok = True
     except Exception as e:
         log.warning(f"PG write failed: {e}")
@@ -94,6 +128,13 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         "memory_type": "episodic",
         "session_id": session_id,
         "created_at": now.isoformat(),
+        "extraction": {
+            "facts": len(extraction.facts),
+            "entities": len(extraction.entities),
+            "tags": extraction.tags,
+            "shareable": extraction.shareable,
+            "status": extraction.status,
+        },
         "storage": {
             "jsonl": "ok" if jsonl_ok else "failed",
             "pg": "ok" if pg_ok else "failed",
@@ -123,7 +164,6 @@ def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
             agent_id=agent_id,
             limit=limit,
         )
-        # Fall back to recency if no semantic results
         if not results:
             results = pg.recall(query=query, agent_id=agent_id, limit=limit)
         return results
@@ -144,6 +184,7 @@ def memory_status() -> dict:
         "nas": "mounted" if jsonl.is_mounted() else "unmounted",
         "nas_path": config.nas_path,
         "embedding_model": embedder.model_name,
+        "extraction": "haiku" if config.anthropic_api_key else ("ollama" if config.ollama_base_url else "disabled"),
     }
 
 
@@ -153,6 +194,7 @@ def main():
     print(f"Connected to PostgreSQL")
     print(f"NAS path: {config.nas_path} (mounted: {jsonl.is_mounted()})")
     print(f"Embedding model: {embedder.model_name} ({embedder.dimensions}-dim)")
+    print(f"Extraction: {'haiku' if config.anthropic_api_key else 'disabled (no ANTHROPIC_API_KEY)'}")
     print(f"Starting MCP server on {config.server_host}:{config.server_port}")
     mcp.run(transport="streamable-http", host=config.server_host, port=config.server_port)
 

@@ -1,5 +1,7 @@
 """PostgreSQL storage layer."""
 
+import json
+import uuid
 from datetime import datetime
 
 import psycopg
@@ -37,30 +39,58 @@ class PGStorage:
         created_at: datetime,
         memory_type: str = "episodic",
         embedding: list[float] | None = None,
+        provenance: dict | None = None,
     ) -> None:
         """Insert a memory row. Raises on failure."""
         if not self._conn:
             raise RuntimeError("Not connected to PostgreSQL")
 
-        if embedding:
-            self._conn.execute(
-                """
-                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                (memory_id, agent_id, memory_type, text, session_id, str(embedding), created_at, created_at),
-            )
-        else:
-            self._conn.execute(
-                """
-                INSERT INTO memories (id, agent_id, memory_type, content, source_session, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                (memory_id, agent_id, memory_type, text, session_id, created_at, created_at),
-            )
+        emb_str = str(embedding) if embedding else None
+        prov_json = json.dumps(provenance) if provenance else None
+
+        self._conn.execute(
+            """
+            INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, created_at, created_at),
+        )
         self._conn.commit()
+
+    def store_facts(
+        self,
+        facts: list[str],
+        agent_id: str,
+        session_id: str,
+        source_memory_id: str,
+        created_at: datetime,
+        embeddings: list[list[float]] | None = None,
+        provenance: dict | None = None,
+    ) -> list[str]:
+        """Store extracted facts as separate semantic memory rows. Returns IDs."""
+        if not self._conn:
+            raise RuntimeError("Not connected to PostgreSQL")
+
+        ids = []
+        prov_json = json.dumps(provenance) if provenance else None
+
+        for i, fact in enumerate(facts):
+            fact_id = str(uuid.uuid4())
+            emb_str = str(embeddings[i]) if embeddings and i < len(embeddings) else None
+
+            self._conn.execute(
+                """
+                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, created_at, updated_at)
+                VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (fact_id, agent_id, fact, session_id, emb_str, prov_json, created_at, created_at),
+            )
+            ids.append(fact_id)
+
+        self._conn.commit()
+        return ids
 
     def recall_semantic(
         self,
