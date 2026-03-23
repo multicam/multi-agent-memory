@@ -118,15 +118,16 @@ _Tracer bullet — thinnest possible end-to-end proof._
   - On session end: stores conversation summary via memory server HTTP API
   - On message sent: continuous capture of agent responses
   - Config via `hooks.internal.entries.memory-sync.env` in openclaw.json
-- [ ] Install hook on ag-1 and ag-2 (`openclaw hooks install`)
-- [ ] Configure hook env: `MEMORY_API_URL`, `AGENT_ID`
+- [x] Install hook on ag-1 and ag-2 via Ansible (`memory-hook` role in agents-install.yml)
+- [x] Configure hook env: `MEMORY_API_URL`, `AGENT_ID` (ag-1 and ag-2 respectively)
+- [x] DHCP reservations set on Araknis router — IPs survive power outages
 - [ ] Test full session lifecycle: conversation → /new → verify memory stored
 - [ ] Test continuous capture: agent responds → verify each turn stored
 - [ ] Session-start recall: add to agent system prompt or workspace BOOT.md
 - [ ] Test cross-agent sharing: ag-1 learns → ag-2 benefits in separate session
 - [ ] Monitor: memory count, extraction latency, recall quality
 
-**Hook built: 2026-03-23. Awaiting installation and real agent session testing.**
+**Hook installed: 2026-03-24. Awaiting gateway restart and real agent session testing.**
 
 ---
 
