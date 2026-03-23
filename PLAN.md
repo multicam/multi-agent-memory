@@ -79,17 +79,18 @@ _Tracer bullet — thinnest possible end-to-end proof._
 
 ## Phase 4: Fact Extraction
 
-- [ ] `src/extraction/facts.py` — LLM-based extraction
-- [ ] Extraction prompt: input text → structured JSON (facts, entities, tags, shareable flag)
-- [ ] Primary model: claude-haiku-4-5 via anthropic SDK
-- [ ] Fallback: Ollama (local) if API unavailable
-- [ ] On `store_memory`: extract facts, store as separate `semantic` rows in PG linked to source
-- [ ] JSONL record includes `extraction` block: facts, entities, tags, model, extracted_at, shareable
-- [ ] `provenance` JSONB column populated with extraction metadata
-- [ ] Update `rebuild_index.py` to use stored extractions (no re-calling LLM)
-- [ ] Verify: store a conversation turn, query for a specific entity → get the extracted fact
+- [x] `src/extraction/facts.py` — FactExtractor with structured prompt → JSON
+- [x] Extraction prompt → facts (list), entities (list with type), tags (list), shareable (bool)
+- [x] Primary model: claude-haiku-4-5-20251001 via anthropic SDK
+- [x] Fallback: Ollama via httpx (graceful skip if both fail)
+- [x] On `store_memory`: extract facts, store as separate `semantic` rows in PG with embeddings
+- [x] JSONL record includes `extraction` block: facts, entities, tags, model, extracted_at, shareable, status
+- [x] `provenance` JSONB column populated (extraction_model, extraction_status, extracted_at)
+- [x] `rebuild_index.py` uses cached extractions from JSONL (no LLM re-calls)
+- [x] Verified: "Alice from Acme" → 3 facts, 3 entities, recall finds "Alice wants 1000 rpm" at 0.71 similarity
+- [x] Secrets (ANTHROPIC_API_KEY) managed via gitignored secrets.yml in Ansible
 
-**Done when:** every stored memory has structured facts extracted and indexed, and rebuilds use cached extractions.
+**Completed: 2026-03-23. All Phase 4 tests passing.**
 
 ---
 
