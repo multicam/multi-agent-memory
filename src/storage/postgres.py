@@ -1,7 +1,6 @@
 """PostgreSQL storage layer."""
 
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import psycopg
 from psycopg.rows import dict_row
@@ -31,33 +30,26 @@ class PGStorage:
 
     def store(
         self,
+        memory_id: str,
         text: str,
         agent_id: str,
         session_id: str,
+        created_at: datetime,
         memory_type: str = "episodic",
-    ) -> dict:
+    ) -> None:
+        """Insert a memory row. Raises on failure."""
         if not self._conn:
             raise RuntimeError("Not connected to PostgreSQL")
-
-        memory_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
 
         self._conn.execute(
             """
             INSERT INTO memories (id, agent_id, memory_type, content, source_session, created_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
             """,
-            (memory_id, agent_id, memory_type, text, session_id, now, now),
+            (memory_id, agent_id, memory_type, text, session_id, created_at, created_at),
         )
         self._conn.commit()
-
-        return {
-            "id": memory_id,
-            "agent_id": agent_id,
-            "memory_type": memory_type,
-            "session_id": session_id,
-            "created_at": now.isoformat(),
-        }
 
     def recall(
         self,
@@ -68,7 +60,7 @@ class PGStorage:
         if not self._conn:
             raise RuntimeError("Not connected to PostgreSQL")
 
-        # Phase 1: recency-based recall only (no embeddings yet)
+        # Phase 1-2: recency-based recall only (semantic search in Phase 3)
         rows = self._conn.execute(
             """
             SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at
@@ -92,3 +84,15 @@ class PGStorage:
             }
             for r in rows
         ]
+
+    def count(self) -> int:
+        if not self._conn:
+            raise RuntimeError("Not connected to PostgreSQL")
+        row = self._conn.execute("SELECT count(*) AS n FROM memories").fetchone()
+        return row["n"]
+
+    def truncate(self) -> None:
+        if not self._conn:
+            raise RuntimeError("Not connected to PostgreSQL")
+        self._conn.execute("TRUNCATE memories")
+        self._conn.commit()

@@ -1,14 +1,21 @@
 """Multi-agent memory MCP server."""
 
+import logging
 import os
+import uuid
+from datetime import datetime, timezone
 
 from fastmcp import FastMCP
 
 from src.config import Config
+from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
+
+log = logging.getLogger("agent-memory")
 
 config = Config.from_env()
 pg = PGStorage(config.pg_url)
+jsonl = JSONLStorage(config.nas_path)
 
 mcp = FastMCP(
     "multi-agent-memory",
@@ -33,10 +40,54 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     if not agent_id.strip():
         return {"error": "agent_id is required"}
 
+    memory_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    record = {
+        "id": memory_id,
+        "agent_id": agent_id,
+        "timestamp": now.isoformat(),
+        "type": "episodic",
+        "content": text,
+        "session_id": session_id,
+        "metadata": {},
+    }
+
+    # Write-ahead: JSONL first (durable), then PG (best-effort)
+    jsonl_ok = False
     try:
-        return pg.store(text=text, agent_id=agent_id, session_id=session_id)
+        jsonl.append(record=record, agent_id=agent_id, session_id=session_id)
+        jsonl_ok = True
+    except OSError as e:
+        log.warning(f"JSONL write failed (NAS issue): {e}")
+
+    pg_ok = False
+    try:
+        pg.store(
+            memory_id=memory_id,
+            text=text,
+            agent_id=agent_id,
+            session_id=session_id,
+            created_at=now,
+        )
+        pg_ok = True
     except Exception as e:
-        return {"error": str(e)}
+        log.warning(f"PG write failed: {e}")
+
+    if not jsonl_ok and not pg_ok:
+        return {"error": "Both JSONL and PG writes failed"}
+
+    return {
+        "id": memory_id,
+        "agent_id": agent_id,
+        "memory_type": "episodic",
+        "session_id": session_id,
+        "created_at": now.isoformat(),
+        "storage": {
+            "jsonl": "ok" if jsonl_ok else "failed",
+            "pg": "ok" if pg_ok else "failed",
+        },
+    }
 
 
 @mcp.tool()
@@ -67,19 +118,20 @@ def memory_status() -> dict:
     Returns:
         Status of PostgreSQL connection and NAS mount.
     """
-    nas_mounted = os.path.ismount(config.nas_path)
-
     return {
         "pg": "connected" if pg.is_connected() else "disconnected",
-        "nas": "mounted" if nas_mounted else "unmounted",
+        "nas": "mounted" if jsonl.is_mounted() else "unmounted",
         "nas_path": config.nas_path,
     }
 
 
 def main():
     pg.connect()
+    log.info("Connected to PostgreSQL")
+    log.info(f"NAS path: {config.nas_path} (mounted: {jsonl.is_mounted()})")
+    log.info(f"Starting MCP server on {config.server_host}:{config.server_port}")
     print(f"Connected to PostgreSQL")
-    print(f"NAS path: {config.nas_path} (mounted: {os.path.ismount(config.nas_path)})")
+    print(f"NAS path: {config.nas_path} (mounted: {jsonl.is_mounted()})")
     print(f"Starting MCP server on {config.server_host}:{config.server_port}")
     mcp.run(transport="streamable-http", host=config.server_host, port=config.server_port)
 
