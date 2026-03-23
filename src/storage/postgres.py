@@ -40,6 +40,7 @@ class PGStorage:
         memory_type: str = "episodic",
         embedding: list[float] | None = None,
         provenance: dict | None = None,
+        shared: bool = False,
     ) -> None:
         """Insert a memory row. Raises on failure."""
         if not self._conn:
@@ -47,14 +48,15 @@ class PGStorage:
 
         emb_str = str(embedding) if embedding else None
         prov_json = json.dumps(provenance) if provenance else None
+        shared_by = agent_id if shared else None
 
         self._conn.execute(
             """
-            INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s)
+            INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
-            (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, created_at, created_at),
+            (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
         )
         self._conn.commit()
 
@@ -67,6 +69,7 @@ class PGStorage:
         created_at: datetime,
         embeddings: list[list[float]] | None = None,
         provenance: dict | None = None,
+        shared: bool = False,
     ) -> list[str]:
         """Store extracted facts as separate semantic memory rows. Returns IDs."""
         if not self._conn:
@@ -74,6 +77,7 @@ class PGStorage:
 
         ids = []
         prov_json = json.dumps(provenance) if provenance else None
+        shared_by = agent_id if shared else None
 
         for i, fact in enumerate(facts):
             fact_id = str(uuid.uuid4())
@@ -81,11 +85,11 @@ class PGStorage:
 
             self._conn.execute(
                 """
-                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, created_at, updated_at)
-                VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s)
+                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
+                VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (fact_id, agent_id, fact, session_id, emb_str, prov_json, created_at, created_at),
+                (fact_id, agent_id, fact, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
             )
             ids.append(fact_id)
 
@@ -99,22 +103,23 @@ class PGStorage:
         limit: int = 10,
         threshold: float = 0.3,
     ) -> list[dict]:
-        """Recall memories by cosine similarity to query embedding."""
+        """Recall memories by cosine similarity. Searches agent's own + shared memories."""
         if not self._conn:
             raise RuntimeError("Not connected to PostgreSQL")
 
+        qe = str(query_embedding)
         rows = self._conn.execute(
             """
             SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM memories
-            WHERE agent_id = %s
+            WHERE (agent_id = %s OR shared = TRUE)
               AND embedding IS NOT NULL
               AND 1 - (embedding <=> %s::vector) > %s
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
-            (str(query_embedding), agent_id, str(query_embedding), threshold, str(query_embedding), limit),
+            (qe, agent_id, qe, threshold, qe, limit),
         ).fetchall()
 
         return [
@@ -125,6 +130,7 @@ class PGStorage:
                 "content": r["content"],
                 "session_id": r["source_session"],
                 "shared": r["shared"],
+                "shared_by": r["shared_by"],
                 "similarity": round(float(r["similarity"]), 4),
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
             }

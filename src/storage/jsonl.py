@@ -34,6 +34,27 @@ class JSONLStorage:
 
         return file_path
 
+    def append_shared(self, record: dict, session_id: str) -> Path:
+        """Append a promoted record to the shared episodic JSONL.
+
+        Raises OSError if NAS is not mounted or not writable.
+        """
+        if not self.is_mounted():
+            raise OSError(f"NAS not mounted at {self._nas_path}")
+
+        shared_dir = self._nas_path / "shared" / "episodic"
+        shared_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = shared_dir / f"{session_id}.jsonl"
+
+        line = json.dumps(record, default=str, ensure_ascii=False)
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+        return file_path
+
     def read_all(self) -> list[dict]:
         """Read all JSONL records across all agents, sorted by timestamp."""
         records = []

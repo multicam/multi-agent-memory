@@ -9,6 +9,7 @@ from fastmcp import FastMCP
 from src.config import Config
 from src.embeddings import Embedder
 from src.extraction.facts import FactExtractor
+from src.extraction.promotion import should_promote
 from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
 
@@ -56,8 +57,9 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     except Exception as e:
         log.warning(f"Embedding generation failed: {e}")
 
-    # Extract facts
+    # Extract facts and determine promotion
     extraction = extractor.extract(text)
+    promoted = should_promote(extraction)
     provenance = {
         "extraction_model": extraction.model,
         "extraction_status": extraction.status,
@@ -74,19 +76,21 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         "session_id": session_id,
         "metadata": {},
         "extraction": extraction.to_dict(),
+        "promoted": promoted,
     }
 
     # Write-ahead: JSONL first (durable), then PG (best-effort)
     jsonl_ok = False
     try:
         jsonl.append(record=record, agent_id=agent_id, session_id=session_id)
+        if promoted:
+            jsonl.append_shared(record=record, session_id=session_id)
         jsonl_ok = True
     except OSError as e:
         log.warning(f"JSONL write failed (NAS issue): {e}")
 
     pg_ok = False
     try:
-        # Store the episodic memory
         pg.store(
             memory_id=memory_id,
             text=text,
@@ -95,9 +99,9 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
             created_at=now,
             embedding=embedding,
             provenance=provenance,
+            shared=promoted,
         )
 
-        # Store extracted facts as separate semantic rows
         if extraction.facts:
             fact_embeddings = None
             try:
@@ -113,6 +117,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
                 created_at=now,
                 embeddings=fact_embeddings,
                 provenance=provenance,
+                shared=promoted,
             )
 
         pg_ok = True
@@ -128,6 +133,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         "memory_type": "episodic",
         "session_id": session_id,
         "created_at": now.isoformat(),
+        "promoted": promoted,
         "extraction": {
             "facts": len(extraction.facts),
             "entities": len(extraction.entities),
@@ -144,7 +150,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
 
 @mcp.tool()
 def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
-    """Search an agent's memories by semantic similarity.
+    """Search an agent's memories by semantic similarity. Includes shared memories from other agents.
 
     Args:
         query: Natural language query to search for.
