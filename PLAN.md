@@ -96,16 +96,16 @@ _Tracer bullet — thinnest possible end-to-end proof._
 
 ## Phase 5: Shared Memory + Promotion
 
-- [ ] `src/extraction/promotion.py` — rule-based auto-promotion
-- [ ] Auto-share rules: infrastructure knowledge, domain facts, tool commands, error resolutions
-- [ ] Keep private: in-progress hypotheses, session-specific context, failed attempts
-- [ ] On `store_memory`: if `shareable == true`, write to both private and `shared/episodic/` on NAS
-- [ ] PG: set `shared = true`, `shared_by = agent_id` on promoted memories
-- [ ] `recall` searches private + shared by default
-- [ ] `scripts/curate.py` — batch LLM review of recent private memories for missed promotions
-- [ ] Verify: ag-1 stores infra fact → auto-promotes → ag-2 can recall it
+- [x] `src/extraction/promotion.py` — rule-based auto-promotion (shareable tags + LLM flag)
+- [x] Auto-share rules: infrastructure, configuration, deployment, networking, tools, error resolutions
+- [x] Keep private: in-progress, hypothesis, debugging, draft, temporary, wip
+- [x] On `store_memory`: if promoted, writes to both private and `shared/episodic/` on NAS
+- [x] PG: `shared = true`, `shared_by = agent_id` on promoted memories and their extracted facts
+- [x] `recall_semantic` searches `agent_id = X OR shared = TRUE` (private + shared)
+- [x] `scripts/curate.py` — batch LLM review of private memories for missed promotions
+- [x] Verified: ag-1 stores "dev server port 3001" → auto-promotes → ag-2 recalls at 0.81 similarity with `shared_by: ag-1`
 
-**Done when:** agents have isolated private memories with automatic knowledge sharing through the shared namespace.
+**Completed: 2026-03-23. All Phase 5 tests passing.**
 
 ---
 
