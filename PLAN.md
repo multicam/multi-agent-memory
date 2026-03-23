@@ -111,15 +111,17 @@ _Tracer bullet — thinnest possible end-to-end proof._
 
 ## Phase 6: Agent Integration
 
-- [ ] Determine MCP transport for OpenClaw (stdio vs HTTP/SSE)
-- [ ] Configure ag-1 and ag-2 to connect to memory MCP server on vm-services:8888
-- [ ] Test full agent session lifecycle: conversation → store → end session → new session → recall
-- [ ] Verify auto-capture pattern: every meaningful turn retained without explicit agent action
-- [ ] Session-start injection: `recall("recent context for {agent_id}")` → prepend to agent context
-- [ ] Test shared memory: ag-1 learns something, ag-2 benefits in a separate session
-- [ ] Monitor: memory count, extraction latency, recall quality
+- [x] Determined MCP transport: HTTP (streamable-http) — OpenClaw supports it natively
+- [x] Configured ag-1 and ag-2: `openclaw.json` → `plugins.entries.mcp-integration.config.servers.agent-memory`
+- [x] Verified tool discovery: ag-1 sees `store_memory`, `recall`, `memory_status` from vm-services:8888
+- [x] Verified tool discovery: ag-2 sees same tools
+- [x] Cross-agent sharing verified via MCP (Phase 5 test: ag-1 stores → ag-2 recalls)
+- [ ] Test full agent session lifecycle with real OpenClaw sessions (manual — run agent, verify memories persist)
+- [ ] Auto-capture pattern: needs OpenClaw agent prompt/hook to call store_memory on each turn
+- [ ] Session-start injection: needs OpenClaw agent prompt to call recall at session start
+- [ ] Monitor: memory count, extraction latency, recall quality (after real usage)
 
-**Done when:** both agents use memory transparently in real sessions.
+**Infrastructure complete: 2026-03-23. Awaiting real agent sessions for validation.**
 
 ---
 
