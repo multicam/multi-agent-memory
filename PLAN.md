@@ -185,13 +185,10 @@ _These are future capabilities, not committed work. They are subject to redesign
 
 **Trigger:** after Phase 5 promotion rules are validated manually and auto-promotion is trusted.
 
-### D7: Web Admin UI
+### D7: Web Admin UI — ABSORBED
 
-- [ ] Read-only interface for browsing memories, entities, shared pool
-- [ ] Memory timeline, agent comparison, extraction quality review
-- [ ] Lightweight Flask/FastAPI app, same server or separate
-
-**Trigger:** when JM needs to inspect memory state beyond `psql` queries and JSONL grep.
+**Absorbed into multi-agent-dashboard** (~/Code/multi-agent-dashboard, Phase 5).
+Memory browser with searchable table, filters, expandable rows, extraction details — all built into the Bun + React dashboard on port 9020.
 
 ### D8: Remote Access (Tailscale)
 
