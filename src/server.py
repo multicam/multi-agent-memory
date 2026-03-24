@@ -11,7 +11,7 @@ from src.embeddings import Embedder
 from src.extraction.facts import FactExtractor
 from src.extraction.promotion import should_promote
 from src.storage.jsonl import JSONLStorage
-from src.storage.postgres import PGStorage
+from src.storage.postgres import PGStorage, rrf_merge
 
 log = logging.getLogger("agent-memory")
 
@@ -150,7 +150,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
 
 @mcp.tool()
 def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
-    """Search an agent's memories by semantic similarity. Includes shared memories from other agents.
+    """Search an agent's memories by hybrid semantic + keyword matching. Includes shared memories from other agents.
 
     Args:
         query: Natural language query to search for.
@@ -158,24 +158,42 @@ def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
         limit: Maximum number of results to return.
 
     Returns:
-        List of matching memory records, ranked by relevance.
+        List of matching memory records, ranked by relevance (RRF fusion of semantic + BM25).
     """
     if not agent_id.strip():
         return [{"error": "agent_id is required"}]
 
+    semantic_results = []
+    bm25_results = []
+
+    # Channel 1: Semantic (embedding similarity)
     try:
         query_embedding = embedder.embed(query)
-        results = pg.recall_semantic(
+        semantic_results = pg.recall_semantic(
             query_embedding=query_embedding,
             agent_id=agent_id,
             limit=limit,
         )
-        if not results:
-            results = pg.recall(query=query, agent_id=agent_id, limit=limit)
-        return results
     except Exception as e:
-        log.warning(f"Semantic recall failed, falling back to recency: {e}")
-        return pg.recall(query=query, agent_id=agent_id, limit=limit)
+        log.warning(f"Semantic recall failed: {e}")
+
+    # Channel 2: BM25 (keyword match)
+    try:
+        bm25_results = pg.recall_bm25(
+            query=query,
+            agent_id=agent_id,
+            limit=limit,
+        )
+    except Exception as e:
+        log.warning(f"BM25 recall failed: {e}")
+
+    # Merge via RRF if we have results from either channel
+    if semantic_results or bm25_results:
+        return rrf_merge(semantic_results, bm25_results, limit=limit)
+
+    # Last resort: recency fallback
+    log.warning("Both semantic and BM25 recall failed, falling back to recency")
+    return pg.recall(query=query, agent_id=agent_id, limit=limit)
 
 
 @mcp.tool()

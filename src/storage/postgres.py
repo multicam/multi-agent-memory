@@ -137,6 +137,44 @@ class PGStorage:
             for r in rows
         ]
 
+    def recall_bm25(
+        self,
+        query: str,
+        agent_id: str,
+        limit: int = 10,
+    ) -> list[dict]:
+        """Recall memories by BM25 full-text search. Searches agent's own + shared memories."""
+        if not self._conn:
+            raise RuntimeError("Not connected to PostgreSQL")
+
+        rows = self._conn.execute(
+            """
+            SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
+                   ts_rank(search_vector, plainto_tsquery('english', %s)) AS bm25_rank
+            FROM memories
+            WHERE (agent_id = %s OR shared = TRUE)
+              AND search_vector @@ plainto_tsquery('english', %s)
+            ORDER BY bm25_rank DESC
+            LIMIT %s
+            """,
+            (query, agent_id, query, limit),
+        ).fetchall()
+
+        return [
+            {
+                "id": str(r["id"]),
+                "agent_id": r["agent_id"],
+                "memory_type": r["memory_type"],
+                "content": r["content"],
+                "session_id": r["source_session"],
+                "shared": r["shared"],
+                "shared_by": r["shared_by"],
+                "bm25_rank": round(float(r["bm25_rank"]), 4),
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ]
+
     def recall(
         self,
         query: str,
@@ -182,3 +220,39 @@ class PGStorage:
             raise RuntimeError("Not connected to PostgreSQL")
         self._conn.execute("TRUNCATE memories")
         self._conn.commit()
+
+
+def rrf_merge(
+    semantic_results: list[dict],
+    bm25_results: list[dict],
+    k: int = 60,
+    limit: int = 10,
+) -> list[dict]:
+    """Merge two ranked result lists using Reciprocal Rank Fusion.
+
+    RRF score = sum(1 / (k + rank)) for each list the document appears in.
+    k=60 is the standard value from Cormack et al. 2009.
+    """
+    scores: dict[str, float] = {}
+    docs: dict[str, dict] = {}
+
+    for rank, doc in enumerate(semantic_results):
+        doc_id = doc["id"]
+        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+        docs[doc_id] = doc
+
+    for rank, doc in enumerate(bm25_results):
+        doc_id = doc["id"]
+        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+        if doc_id not in docs:
+            docs[doc_id] = doc
+
+    sorted_ids = sorted(scores.keys(), key=lambda did: scores[did], reverse=True)
+
+    results = []
+    for doc_id in sorted_ids[:limit]:
+        doc = docs[doc_id].copy()
+        doc["rrf_score"] = round(scores[doc_id], 6)
+        results.append(doc)
+
+    return results
