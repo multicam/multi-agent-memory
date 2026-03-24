@@ -121,6 +121,9 @@ _Tracer bullet — thinnest possible end-to-end proof._
 - [x] Install hook on ag-1 and ag-2 via Ansible (`memory-hook` role in agents-install.yml)
 - [x] Configure hook env: `MEMORY_API_URL`, `AGENT_ID` (ag-1 and ag-2 respectively)
 - [x] DHCP reservations set on Araknis router — IPs survive power outages
+- [x] `scripts/init-agent-memory.sh` — bootstrap `memory/`, `MEMORY.md`, daily note, heartbeat state on agent VMs
+  - Idempotent, SSH-based, accepts host list as args
+  - Deployed to ag-1 and ag-2 (2026-03-24)
 - [ ] Test full session lifecycle: conversation → /new → verify memory stored
 - [ ] Test continuous capture: agent responds → verify each turn stored
 - [ ] Session-start recall: add to agent system prompt or workspace BOOT.md
