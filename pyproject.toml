@@ -10,3 +10,9 @@ dependencies = [
     "psycopg[binary]>=3.3.3",
     "sentence-transformers>=5.3.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-mock>=3.15.1",
+]
