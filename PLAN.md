@@ -155,13 +155,20 @@ _Tracer bullet — thinnest possible end-to-end proof._
 
 _These are future capabilities, not committed work. They are subject to redesign once we have usage data from the active phases above. Priorities and approach will evolve based on what we observe in production. Promote on demand._
 
-### D1: BM25 Keyword Search (2nd retrieval channel)
+### D1: BM25 Keyword Search (2nd retrieval channel) — COMPLETE
 
-- [ ] Add PostgreSQL full-text search (tsvector/tsquery) index on `memories.content`
-- [ ] Second retrieval path in `recall`: keyword match alongside semantic
-- [ ] Reciprocal Rank Fusion to merge semantic + keyword results
+- [x] Add PostgreSQL full-text search (tsvector/tsquery) index on `memories.content`
+  - Migration `002_add_bm25.sql`: GENERATED ALWAYS AS tsvector column + GIN index
+  - Existing rows auto-populated at ALTER time
+- [x] Second retrieval path in `recall`: keyword match alongside semantic
+  - `recall_bm25()` in postgres.py using `plainto_tsquery` + `ts_rank`
+  - Same visibility rules as semantic (agent_id = X OR shared = TRUE)
+- [x] Reciprocal Rank Fusion to merge semantic + keyword results
+  - `rrf_merge()` with k=60, documents in both channels rank highest
+  - `recall()` MCP tool transparently uses hybrid — same signature
+  - Recency fallback only if both channels return empty
 
-**Trigger:** when semantic search alone misses exact-match queries (proper nouns, error codes, specific commands).
+**Completed: 2026-03-24. Verified: "XYZZY_CONFIG" exact match + "port 3001" keyword match both found via hybrid recall.**
 
 ### D2: Entity Resolution
 
@@ -197,13 +204,16 @@ _These are future capabilities, not committed work. They are subject to redesign
 
 **Trigger:** after weeks of agent operation, when enough episodic data exists to extract meaningful patterns.
 
-### D6: Nightly Curation Cron
+### D6: Nightly Curation Cron — COMPLETE
 
-- [ ] Schedule `curate.py` as a systemd timer or cron job
-- [ ] Configurable schedule (nightly to start, adjust based on volume)
-- [ ] Reports: what was promoted, what was skipped, confidence scores
+- [x] Schedule `curate.py` as a systemd timer
+  - `agent-memory-curate.timer` — daily at 03:00 UTC, Persistent=true
+  - `agent-memory-curate.service` — oneshot, same user/env as main server
+  - `deploy.sh` updated to enable timer on deploy
+- [x] Configurable schedule (edit `OnCalendar` in timer unit)
+- [x] Reports via journalctl (reviewed N, promoted N, skipped N)
 
-**Trigger:** after Phase 5 promotion rules are validated manually and auto-promotion is trusted.
+**Completed: 2026-03-24. First run: reviewed 19 private memories, promoted 6.**
 
 ### D7: Web Admin UI — ABSORBED
 
