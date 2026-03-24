@@ -80,65 +80,122 @@ async function callMemoryServer(
   return null;
 }
 
-function getConfig(event: HookEvent) {
-  const hookEnv =
-    event.context.cfg?.hooks?.internal?.entries?.["memory-sync"]?.env || {};
+async function getConfig(event: HookEvent) {
+  // Try event context first
+  let hookEnv =
+    event.context.cfg?.hooks?.internal?.entries?.["memory-sync"]?.env;
+
+  // Fallback: read openclaw.json directly (event.context.cfg may not be populated)
+  if (!hookEnv?.AGENT_ID) {
+    try {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const home = process.env.HOME || "/home/tgds";
+      const config = JSON.parse(
+        readFileSync(join(home, ".openclaw", "openclaw.json"), "utf-8"),
+      );
+      hookEnv =
+        config?.hooks?.internal?.entries?.["memory-sync"]?.env || {};
+    } catch {
+      hookEnv = {};
+    }
+  }
+
   return {
     apiUrl:
-      hookEnv.MEMORY_API_URL ||
+      hookEnv?.MEMORY_API_URL ||
       process.env.MEMORY_API_URL ||
       "http://192.168.10.24:8888/mcp",
-    agentId: hookEnv.AGENT_ID || process.env.AGENT_ID || "unknown",
+    agentId: hookEnv?.AGENT_ID || process.env.AGENT_ID || "unknown",
   };
 }
 
 const handler = async (event: HookEvent) => {
-  const { apiUrl, agentId } = getConfig(event);
+  const { apiUrl, agentId } = await getConfig(event);
 
   // Session end: store conversation summary
   if (
     event.type === "command" &&
     ["new", "reset"].includes(event.action)
   ) {
+    // Store old session summary (if there are messages)
     const session =
       event.context.previousSessionEntry || event.context.sessionEntry;
     const messages = session?.messages || [];
 
-    if (messages.length === 0) {
-      return;
+    if (messages.length > 0) {
+      const turns = messages
+        .slice(-20)
+        .map((m: any) => {
+          const role = m.role || "unknown";
+          const content =
+            typeof m.content === "string"
+              ? m.content.slice(0, 500)
+              : JSON.stringify(m.content).slice(0, 500);
+          return `[${role}] ${content}`;
+        })
+        .join("\n");
+
+      const summary = `Session ended (${event.action}). ${messages.length} turns. Last messages:\n${turns}`;
+
+      try {
+        const result = await callMemoryServer(apiUrl, "store_memory", {
+          text: summary,
+          agent_id: agentId,
+          session_id: event.sessionKey,
+        });
+
+        const stored = result?.result?.structuredContent;
+        if (stored?.id) {
+          const promoted = stored.promoted ? " [shared]" : "";
+          console.log(
+            `[memory-sync] Session stored: ${stored.id}${promoted} (${stored.extraction?.facts || 0} facts)`,
+          );
+        }
+      } catch (error: any) {
+        console.error(`[memory-sync] Failed to store session: ${error.message}`);
+      }
     }
 
-    // Build a summary of the session
-    const turns = messages
-      .slice(-20) // last 20 messages max
-      .map((m: any) => {
-        const role = m.role || "unknown";
-        const content =
-          typeof m.content === "string"
-            ? m.content.slice(0, 500)
-            : JSON.stringify(m.content).slice(0, 500);
-        return `[${role}] ${content}`;
-      })
-      .join("\n");
-
-    const summary = `Session ended (${event.action}). ${messages.length} turns. Last messages:\n${turns}`;
-
+    // Session-start recall (always runs, even if old session was empty): fetch relevant shared memories for the new session
     try {
-      const result = await callMemoryServer(apiUrl, "store_memory", {
-        text: summary,
+      const recalled = await callMemoryServer(apiUrl, "recall", {
+        query: "important facts about JM preferences, tools, infrastructure, project conventions, and lessons learned",
         agent_id: agentId,
-        session_id: event.sessionKey,
+        limit: 10,
       });
 
-      const stored = result?.result?.structuredContent;
-      if (stored?.id) {
-        const promoted = stored.promoted ? " [shared]" : "";
-        console.log(
-          `[memory-sync] Session stored: ${stored.id}${promoted} (${stored.extraction?.facts || 0} facts)`,
-        );
+      const memories = recalled?.result?.content?.[0]?.text;
+      if (memories) {
+        const parsed = JSON.parse(memories);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Filter to meaningful results (>50% similarity)
+          const relevant = parsed.filter((m: any) => !m.similarity || m.similarity > 0.5);
+          if (relevant.length === 0) {
+            return;
+          }
+
+          const { writeFileSync, mkdirSync } = await import("node:fs");
+          const { join } = await import("node:path");
+          const wsDir =
+            event.context.workspaceDir ||
+            join(process.env.HOME || "/home/tgds", ".openclaw", "workspace");
+          const memDir = join(wsDir, "memory");
+          mkdirSync(memDir, { recursive: true });
+
+          const lines = relevant.map((m: any) => {
+            const sim = m.similarity ? ` (${(m.similarity * 100).toFixed(0)}%)` : "";
+            const src = m.shared_by && m.shared_by !== agentId ? ` — from ${m.shared_by}` : "";
+            return `- ${m.content?.slice(0, 200)}${sim}${src}`;
+          });
+
+          const md = `# Recalled Context\n\n_Auto-populated on session start. ${relevant.length} memories recalled._\n\n${lines.join("\n")}\n`;
+          writeFileSync(join(memDir, "recalled.md"), md, "utf-8");
+          console.log(`[memory-sync] Recalled ${relevant.length} memories → memory/recalled.md`);
+        }
       }
     } catch (error: any) {
-      console.error(`[memory-sync] Failed to store session: ${error.message}`);
+      console.error(`[memory-sync] Recall failed (non-fatal): ${error.message}`);
     }
 
     return;

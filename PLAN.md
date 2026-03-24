@@ -124,13 +124,30 @@ _Tracer bullet — thinnest possible end-to-end proof._
 - [x] `scripts/init-agent-memory.sh` — bootstrap `memory/`, `MEMORY.md`, daily note, heartbeat state on agent VMs
   - Idempotent, SSH-based, accepts host list as args
   - Deployed to ag-1 and ag-2 (2026-03-24)
-- [ ] Test full session lifecycle: conversation → /new → verify memory stored
-- [ ] Test continuous capture: agent responds → verify each turn stored
-- [ ] Session-start recall: add to agent system prompt or workspace BOOT.md
-- [ ] Test cross-agent sharing: ag-1 learns → ag-2 benefits in separate session
-- [ ] Monitor: memory count, extraction latency, recall quality
+- [x] Fixed AGENT_ID bug: `event.context.cfg` not populated by OpenClaw; added fallback to read `openclaw.json` directly
+  - Root cause: OpenClaw inlines hook code into gateway process, stripping top-level ESM imports
+  - Fix: dynamic `await import("node:fs")` inside async `getConfig()` to read openclaw.json
+  - Existing "unknown" records reassigned to ag-1 in PG and NAS
+  - Also killed stale terminal-session OpenClaw process that was competing for Telegram polling
+- [x] Test continuous capture: agent responds → verify each turn stored
+  - Verified: ag-1's Telegram group messages auto-captured (6 entries from 2026-03-24)
+  - Hook fires on `message:sent`, stores to JSONL + PG with fact extraction
+- [x] Test cross-agent sharing: ag-1 learns → ag-2 benefits in separate session
+  - Verified: ag-1 stored tool preferences → ag-2 recalled at 0.84 similarity
+  - Reverse direction also works: ag-1 recalls ag-2's stack prefs at 0.75 similarity
+  - Auto-promotion working: infrastructure/tooling tags → shared namespace
+- [x] Test full session lifecycle: conversation → /new → verify memory stored
+  - Verified: JM DM'd `/new` to Adele → new session message + greeting stored as ag-1
+- [x] Session-start recall: on `/new`, hook recalls top 10 shared memories → writes `memory/recalled.md`
+  - AGENTS.md updated to read `recalled.md` at startup (step 4)
+  - Query: "important facts about JM preferences, tools, infrastructure, project conventions"
+  - Filtered to >50% similarity to reduce noise
+  - Bug fix: recall now runs even when old session has no messages
+- [x] Monitor: `scripts/memory-stats.sh` — counts by agent/type, extraction stats, shared namespace, storage health, NAS inventory
+  - All metrics from direct SQL queries (PG schema has rich columns)
+  - `memory_status` MCP tool is health-check only (pg/nas/embedding/extraction status)
 
-**Hook installed: 2026-03-24. Awaiting gateway restart and real agent session testing.**
+**Phase 6 complete: 2026-03-24. All items passing.**
 
 ---
 
