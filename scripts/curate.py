@@ -12,6 +12,7 @@ import sys
 import anthropic
 
 from src.config import Config
+from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
 
 CURATION_PROMPT = """Review these private agent memories. For each, decide if it contains
@@ -96,24 +97,51 @@ def main():
         print("Dry run — no changes made")
         return
 
-    # Promote
+    # Promote (write-through to JSONL for Diderot pattern integrity)
+    jsonl = JSONLStorage(config.nas_path)
     promoted = 0
+    skipped_jsonl = 0
+
     for pid in promote_ids:
-        pg._conn.execute(
+        result = pg._conn.execute(
             """
             UPDATE memories
             SET shared = TRUE, shared_by = agent_id, updated_at = NOW()
             WHERE id = %s AND shared = FALSE
+            RETURNING id, agent_id, content, source_session, provenance, created_at
             """,
             (pid,),
-        )
+        ).fetchone()
+
+        if result is None:
+            continue
+
         promoted += 1
+
+        # Write promoted record to shared JSONL
+        record = {
+            "id": str(result["id"]),
+            "agent_id": result["agent_id"],
+            "timestamp": result["created_at"].isoformat() if result["created_at"] else "",
+            "type": "episodic",
+            "content": result["content"],
+            "session_id": result["source_session"] or "curated",
+            "metadata": {},
+            "extraction": result["provenance"] or {},
+            "promoted": True,
+        }
+        try:
+            jsonl.append_shared(record=record, session_id=result["source_session"] or "curated")
+        except OSError as e:
+            print(f"  WARNING: JSONL write failed for {pid}: {e}")
+            skipped_jsonl += 1
 
     pg._conn.commit()
     pg.close()
 
-    print(f"Promoted: {promoted}")
-    print(f"Skipped:  {len(promote_ids) - promoted}")
+    print(f"Promoted:      {promoted}")
+    print(f"JSONL skipped: {skipped_jsonl}")
+    print(f"Skipped:       {len(promote_ids) - promoted}")
 
 
 if __name__ == "__main__":

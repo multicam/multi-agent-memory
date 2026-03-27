@@ -4,3 +4,11 @@ thoughts/
 .env
 __pycache__/
 *.pyc
+
+# tdd-qa baselines (machine-local, not committed)
+.test-baseline.xml
+.test-current.xml
+.coverage
+.coverage-baseline/
+.coverage-current/
+htmlcov/

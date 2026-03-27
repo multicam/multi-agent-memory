@@ -68,7 +68,7 @@ def main():
                     "extracted_at": extraction.get("extracted_at", ""),
                 }
 
-            # Store episodic memory
+            # Store episodic memory (restore shared flag from JSONL)
             pg.store(
                 memory_id=r["id"],
                 text=r["content"],
@@ -78,22 +78,23 @@ def main():
                 memory_type=r.get("type", "episodic"),
                 embedding=embedding,
                 provenance=provenance,
+                shared=r.get("promoted", False),
             )
 
-            # Store extracted facts as semantic rows (from cached extraction)
-            facts = extraction.get("facts", [])
-            if facts:
-                fact_embeddings = None
+            # Store extracted facts AND decisions as semantic rows (mirrors server.py)
+            all_semantic = extraction.get("facts", []) + extraction.get("decisions", [])
+            if all_semantic:
+                sem_embeddings = None
                 if embedder:
-                    fact_embeddings = [embedder.embed(f) for f in facts]
+                    sem_embeddings = [embedder.embed(s) for s in all_semantic]
 
                 pg.store_facts(
-                    facts=facts,
+                    facts=all_semantic,
                     agent_id=r["agent_id"],
                     session_id=r.get("session_id", "unknown"),
                     source_memory_id=r["id"],
                     created_at=created_at,
-                    embeddings=fact_embeddings,
+                    embeddings=sem_embeddings,
                     provenance=provenance,
                 )
 

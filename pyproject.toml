@@ -15,4 +15,32 @@ dependencies = [
 dev = [
     "pytest>=9.0.2",
     "pytest-mock>=3.15.1",
+    "pytest-cov>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Pure logic, no I/O, no network (default)",
+    "integration: Requires mocked external services (PG, NAS, LLM)",
+    "e2e: Full system test against live infrastructure",
+]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--junitxml=.test-current.xml",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 0
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__",
+    "raise NotImplementedError",
 ]
