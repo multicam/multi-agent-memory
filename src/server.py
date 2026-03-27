@@ -102,20 +102,22 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
             shared=promoted,
         )
 
-        if extraction.facts:
-            fact_embeddings = None
+        # Store extracted facts and decisions as separate semantic memories
+        all_semantic = extraction.facts + extraction.decisions
+        if all_semantic:
+            sem_embeddings = None
             try:
-                fact_embeddings = [embedder.embed(f) for f in extraction.facts]
+                sem_embeddings = [embedder.embed(s) for s in all_semantic]
             except Exception as e:
-                log.warning(f"Fact embedding failed: {e}")
+                log.warning(f"Semantic embedding failed: {e}")
 
             pg.store_facts(
-                facts=extraction.facts,
+                facts=all_semantic,
                 agent_id=agent_id,
                 session_id=session_id,
                 source_memory_id=memory_id,
                 created_at=now,
-                embeddings=fact_embeddings,
+                embeddings=sem_embeddings,
                 provenance=provenance,
                 shared=promoted,
             )
@@ -136,6 +138,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         "promoted": promoted,
         "extraction": {
             "facts": len(extraction.facts),
+            "decisions": len(extraction.decisions),
             "entities": len(extraction.entities),
             "tags": extraction.tags,
             "shareable": extraction.shareable,

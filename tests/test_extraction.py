@@ -40,9 +40,10 @@ def test_parse_json_empty():
 
 
 def test_extraction_dataclass_to_dict():
-    """Extraction.to_dict() returns all fields."""
+    """Extraction.to_dict() returns all fields including decisions."""
     e = Extraction(
         facts=["fact1"],
+        decisions=["Decided X because Y"],
         entities=[{"name": "X", "type": "tool"}],
         tags=["infra"],
         shareable=True,
@@ -52,6 +53,7 @@ def test_extraction_dataclass_to_dict():
     )
     d = e.to_dict()
     assert d["facts"] == ["fact1"]
+    assert d["decisions"] == ["Decided X because Y"]
     assert d["model"] == "haiku"
     assert d["shareable"] is True
 
@@ -60,10 +62,19 @@ def test_extraction_defaults():
     """Extraction defaults are sensible."""
     e = Extraction()
     assert e.facts == []
+    assert e.decisions == []
     assert e.entities == []
     assert e.tags == []
     assert e.shareable is False
     assert e.status == "success"
+
+
+def test_extraction_prompt_contains_decisions_field():
+    """Extraction prompt asks for decisions with rationale."""
+    from src.extraction.facts import EXTRACTION_PROMPT
+    assert "decisions" in EXTRACTION_PROMPT
+    assert "rationale" in EXTRACTION_PROMPT.lower()
+    assert "WHY" in EXTRACTION_PROMPT
 
 
 def test_extract_without_api_keys_returns_skipped():

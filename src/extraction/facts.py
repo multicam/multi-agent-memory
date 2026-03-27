@@ -9,16 +9,19 @@ import anthropic
 
 log = logging.getLogger("agent-memory")
 
-EXTRACTION_PROMPT = """Extract structured facts from the following text. Return valid JSON only.
+EXTRACTION_PROMPT = """Extract structured knowledge from the following text. Return valid JSON only.
 
 Text:
 {text}
 
 Return a JSON object with these fields:
 - "facts": list of concise factual statements extracted (strings)
+- "decisions": list of decisions or choices mentioned, each including the rationale/reason (strings — format: "Decided X because Y")
 - "entities": list of objects with "name" (string) and "type" (one of: person, organization, tool, service, infrastructure, concept)
 - "tags": list of topic tags (lowercase, short)
 - "shareable": boolean — true if this is general infrastructure/domain knowledge useful to other agents, false if it's session-specific or in-progress work
+
+Focus on capturing WHY things were decided, not just WHAT happened. If a decision or preference is stated without rationale, still include it but note the rationale is unstated.
 
 If the text contains no extractable facts, return empty lists and shareable=false.
 JSON only, no markdown fences:"""
@@ -27,6 +30,7 @@ JSON only, no markdown fences:"""
 @dataclass
 class Extraction:
     facts: list[str] = field(default_factory=list)
+    decisions: list[str] = field(default_factory=list)
     entities: list[dict] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     shareable: bool = False
@@ -37,6 +41,7 @@ class Extraction:
     def to_dict(self) -> dict:
         return {
             "facts": self.facts,
+            "decisions": self.decisions,
             "entities": self.entities,
             "tags": self.tags,
             "shareable": self.shareable,
@@ -88,6 +93,7 @@ class FactExtractor:
 
         return Extraction(
             facts=data.get("facts", []),
+            decisions=data.get("decisions", []),
             entities=data.get("entities", []),
             tags=data.get("tags", []),
             shareable=data.get("shareable", False),
@@ -111,6 +117,7 @@ class FactExtractor:
 
         return Extraction(
             facts=data.get("facts", []),
+            decisions=data.get("decisions", []),
             entities=data.get("entities", []),
             tags=data.get("tags", []),
             shareable=data.get("shareable", False),
