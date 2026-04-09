@@ -1,31 +1,73 @@
-"""PostgreSQL storage layer."""
+"""PostgreSQL storage layer with connection pooling."""
 
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+
+def _format_row(row: dict, extra_fields: tuple[str, ...] = ()) -> dict:
+    """Format a DB row into a memory dict with standard + extra fields."""
+    result = {
+        "id": str(row["id"]),
+        "agent_id": row["agent_id"],
+        "memory_type": row["memory_type"],
+        "content": row["content"],
+        "session_id": row["source_session"],
+        "shared": row["shared"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+    }
+    if "shared_by" in row:
+        result["shared_by"] = row["shared_by"]
+    for field in extra_fields:
+        if field in row:
+            result[field] = round(float(row[field]), 4)
+    return result
 
 
 class PGStorage:
     def __init__(self, pg_url: str):
         self._pg_url = pg_url
+        self._pool: ConnectionPool | None = None
+        # Direct connection for test mocks and single-threaded scripts.
+        # When set, _get_conn() yields this instead of acquiring from pool.
         self._conn: psycopg.Connection | None = None
 
     def connect(self) -> None:
-        self._conn = psycopg.connect(self._pg_url, row_factory=dict_row)
+        self._pool = ConnectionPool(
+            self._pg_url,
+            min_size=2,
+            max_size=10,
+            kwargs={"row_factory": dict_row},
+        )
 
     def close(self) -> None:
+        if self._pool:
+            self._pool.close()
+            self._pool = None
         if self._conn:
             self._conn.close()
             self._conn = None
 
+    @contextmanager
+    def _get_conn(self):
+        """Yield a connection — mock/direct if set, otherwise from pool."""
+        if self._conn is not None:
+            yield self._conn
+            return
+        if not self._pool:
+            raise RuntimeError("Not connected to PostgreSQL")
+        with self._pool.connection() as conn:
+            yield conn
+
     def is_connected(self) -> bool:
-        if not self._conn:
-            return False
         try:
-            self._conn.execute("SELECT 1")
+            with self._get_conn() as conn:
+                conn.execute("SELECT 1")
             return True
         except Exception:
             return False
@@ -43,22 +85,20 @@ class PGStorage:
         shared: bool = False,
     ) -> None:
         """Insert a memory row. Raises on failure."""
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
-
         emb_str = str(embedding) if embedding else None
         prov_json = json.dumps(provenance) if provenance else None
         shared_by = agent_id if shared else None
 
-        self._conn.execute(
-            """
-            INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
-        )
-        self._conn.commit()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
+            )
+            conn.commit()
 
     def store_facts(
         self,
@@ -72,28 +112,26 @@ class PGStorage:
         shared: bool = False,
     ) -> list[str]:
         """Store extracted facts as separate semantic memory rows. Returns IDs."""
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
-
         ids = []
         prov_json = json.dumps(provenance) if provenance else None
         shared_by = agent_id if shared else None
 
-        for i, fact in enumerate(facts):
-            fact_id = str(uuid.uuid4())
-            emb_str = str(embeddings[i]) if embeddings and i < len(embeddings) else None
+        with self._get_conn() as conn:
+            with conn.transaction():
+                for i, fact in enumerate(facts):
+                    fact_id = str(uuid.uuid4())
+                    emb_str = str(embeddings[i]) if embeddings and i < len(embeddings) else None
 
-            self._conn.execute(
-                """
-                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
-                VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                (fact_id, agent_id, fact, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
-            )
-            ids.append(fact_id)
+                    conn.execute(
+                        """
+                        INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
+                        VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (fact_id, agent_id, fact, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
+                    )
+                    ids.append(fact_id)
 
-        self._conn.commit()
         return ids
 
     def recall_semantic(
@@ -104,38 +142,23 @@ class PGStorage:
         threshold: float = 0.3,
     ) -> list[dict]:
         """Recall memories by cosine similarity. Searches agent's own + shared memories."""
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
-
         qe = str(query_embedding)
-        rows = self._conn.execute(
-            """
-            SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM memories
-            WHERE (agent_id = %s OR shared = TRUE)
-              AND embedding IS NOT NULL
-              AND 1 - (embedding <=> %s::vector) > %s
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (qe, agent_id, qe, threshold, qe, limit),
-        ).fetchall()
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM memories
+                WHERE (agent_id = %s OR shared = TRUE)
+                  AND embedding IS NOT NULL
+                  AND 1 - (embedding <=> %s::vector) > %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (qe, agent_id, qe, threshold, qe, limit),
+            ).fetchall()
 
-        return [
-            {
-                "id": str(r["id"]),
-                "agent_id": r["agent_id"],
-                "memory_type": r["memory_type"],
-                "content": r["content"],
-                "session_id": r["source_session"],
-                "shared": r["shared"],
-                "shared_by": r["shared_by"],
-                "similarity": round(float(r["similarity"]), 4),
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            }
-            for r in rows
-        ]
+        return [_format_row(r, extra_fields=("similarity",)) for r in rows]
 
     def recall_bm25(
         self,
@@ -144,36 +167,21 @@ class PGStorage:
         limit: int = 10,
     ) -> list[dict]:
         """Recall memories by BM25 full-text search. Searches agent's own + shared memories."""
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
+                       ts_rank(search_vector, plainto_tsquery('english', %s)) AS bm25_rank
+                FROM memories
+                WHERE (agent_id = %s OR shared = TRUE)
+                  AND search_vector @@ plainto_tsquery('english', %s)
+                ORDER BY bm25_rank DESC
+                LIMIT %s
+                """,
+                (query, agent_id, query, limit),
+            ).fetchall()
 
-        rows = self._conn.execute(
-            """
-            SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
-                   ts_rank(search_vector, plainto_tsquery('english', %s)) AS bm25_rank
-            FROM memories
-            WHERE (agent_id = %s OR shared = TRUE)
-              AND search_vector @@ plainto_tsquery('english', %s)
-            ORDER BY bm25_rank DESC
-            LIMIT %s
-            """,
-            (query, agent_id, query, limit),
-        ).fetchall()
-
-        return [
-            {
-                "id": str(r["id"]),
-                "agent_id": r["agent_id"],
-                "memory_type": r["memory_type"],
-                "content": r["content"],
-                "session_id": r["source_session"],
-                "shared": r["shared"],
-                "shared_by": r["shared_by"],
-                "bm25_rank": round(float(r["bm25_rank"]), 4),
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            }
-            for r in rows
-        ]
+        return [_format_row(r, extra_fields=("bm25_rank",)) for r in rows]
 
     def recall(
         self,
@@ -182,44 +190,29 @@ class PGStorage:
         limit: int = 10,
     ) -> list[dict]:
         """Recency-based recall (fallback when no embedding available)."""
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at
+                FROM memories
+                WHERE (agent_id = %s OR shared = TRUE)
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (agent_id, limit),
+            ).fetchall()
 
-        rows = self._conn.execute(
-            """
-            SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at
-            FROM memories
-            WHERE agent_id = %s
-            ORDER BY created_at DESC
-            LIMIT %s
-            """,
-            (agent_id, limit),
-        ).fetchall()
-
-        return [
-            {
-                "id": str(r["id"]),
-                "agent_id": r["agent_id"],
-                "memory_type": r["memory_type"],
-                "content": r["content"],
-                "session_id": r["source_session"],
-                "shared": r["shared"],
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            }
-            for r in rows
-        ]
+        return [_format_row(r) for r in rows]
 
     def count(self) -> int:
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
-        row = self._conn.execute("SELECT count(*) AS n FROM memories").fetchone()
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT count(*) AS n FROM memories").fetchone()
         return row["n"]
 
     def truncate(self) -> None:
-        if not self._conn:
-            raise RuntimeError("Not connected to PostgreSQL")
-        self._conn.execute("TRUNCATE memories")
-        self._conn.commit()
+        with self._get_conn() as conn:
+            conn.execute("TRUNCATE memories")
+            conn.commit()
 
 
 def rrf_merge(

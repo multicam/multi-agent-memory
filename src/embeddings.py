@@ -1,8 +1,8 @@
 """Embedding generation using SentenceTransformers."""
 
 import logging
+import threading
 
-import numpy as np
 from sentence_transformers import SentenceTransformer
 
 log = logging.getLogger("agent-memory")
@@ -15,17 +15,19 @@ class Embedder:
     def __init__(self, model_name: str = MODEL_NAME):
         self._model_name = model_name
         self._model: SentenceTransformer | None = None
+        self._lock = threading.Lock()
 
     def load(self) -> None:
-        log.info(f"Loading embedding model: {self._model_name}")
+        log.info("Loading embedding model: %s", self._model_name)
         self._model = SentenceTransformer(self._model_name, trust_remote_code=True)
-        log.info(f"Embedding model loaded ({DIMENSIONS}-dim)")
+        log.info("Embedding model loaded (%d-dim)", DIMENSIONS)
 
     def embed(self, text: str) -> list[float]:
         """Generate a 768-dim embedding for the given text."""
         if not self._model:
             raise RuntimeError("Embedding model not loaded")
-        vec = self._model.encode(text, normalize_embeddings=True)
+        with self._lock:
+            vec = self._model.encode(text, normalize_embeddings=True)
         return vec.tolist()
 
     @property

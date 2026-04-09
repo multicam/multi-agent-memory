@@ -5,16 +5,16 @@
 
 set -euo pipefail
 
+. "$(dirname "$0")/env.sh"
+
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/agent-memory}"
-PG_DB="agent_memory"
-PG_USER="memory_user"
 KEEP_DAYS=7
 
 mkdir -p "$BACKUP_DIR"
 
 DUMP_FILE="$BACKUP_DIR/${PG_DB}_$(date +%Y%m%d_%H%M%S).dump"
 
-PGPASSWORD=***REDACTED*** pg_dump -Fc -U "$PG_USER" -h localhost "$PG_DB" > "$DUMP_FILE"
+pg_dump -Fc -U "$PG_USER" -h "$PG_HOST" "$PG_DB" > "$DUMP_FILE"
 
 SIZE=$(du -h "$DUMP_FILE" | cut -f1)
 echo "$(date -Iseconds) Backup complete: $DUMP_FILE ($SIZE)"

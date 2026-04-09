@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # memory-stats.sh — Monitoring baseline for multi-agent-memory
-# Usage: ./scripts/memory-stats.sh
-# Requires: PGPASSWORD set or ~/.pgpass configured
+# Usage: PGPASSWORD=xxx ./scripts/memory-stats.sh
 
 set -euo pipefail
 
-PG_HOST="${PG_HOST:-localhost}"
-PG_USER="${PG_USER:-memory_user}"
-PG_DB="${PG_DB:-agent_memory}"
+. "$(dirname "$0")/env.sh"
 
-q() { PGPASSWORD="${PGPASSWORD:-***REDACTED***}" psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" --no-align --tuples-only -c "$1" 2>/dev/null; }
-qf() { PGPASSWORD="${PGPASSWORD:-***REDACTED***}" psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -c "$1" 2>/dev/null; }
+q() { psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" --no-align --tuples-only -c "$1" 2>/dev/null; }
+qf() { psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -c "$1" 2>/dev/null; }
 
 echo "=== Memory System Status — $(date '+%Y-%m-%d %H:%M %Z') ==="
 echo ""
@@ -55,14 +52,15 @@ qf "SELECT shared_by as source_agent,
      ORDER BY shared_by;"
 
 echo "--- Storage Health ---"
-MCP_STATUS=$(curl -sD /tmp/mcp-stat-h.txt http://192.168.10.24:8888/mcp -X POST \
+MCP_URL="http://${MCP_HOST}:${MCP_PORT}/mcp"
+MCP_STATUS=$(curl -sD /tmp/mcp-stat-h.txt "$MCP_URL" -X POST \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"stats","version":"1.0"}}}' 2>/dev/null)
 MCP_SID=$(grep -oP 'mcp-session-id: \K[^\r]+' /tmp/mcp-stat-h.txt 2>/dev/null || echo "")
 
 if [ -n "$MCP_SID" ]; then
-  STATUS=$(curl -s http://192.168.10.24:8888/mcp -X POST \
+  STATUS=$(curl -s "$MCP_URL" -X POST \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -H "Mcp-Session-Id: $MCP_SID" \
@@ -86,8 +84,8 @@ fi
 
 echo ""
 echo "--- NAS Files ---"
-ssh tgds@192.168.10.24 'find /mnt/memory -name "*.jsonl" -type f | wc -l' 2>/dev/null | xargs -I{} echo "  JSONL files: {}"
-ssh tgds@192.168.10.24 'du -sh /mnt/memory 2>/dev/null' | xargs -I{} echo "  Total size: {}"
+ssh "${VM_USER}@${MCP_HOST}" 'find /mnt/memory -name "*.jsonl" -type f | wc -l' 2>/dev/null | xargs -I{} echo "  JSONL files: {}"
+ssh "${VM_USER}@${MCP_HOST}" 'du -sh /mnt/memory 2>/dev/null' | xargs -I{} echo "  Total size: {}"
 
 echo ""
 echo "Done."

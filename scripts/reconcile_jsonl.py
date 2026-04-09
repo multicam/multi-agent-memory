@@ -51,9 +51,10 @@ def main():
 
     # Read all PG episodic IDs
     pg.connect()
-    rows = pg._conn.execute(
-        "SELECT id, shared FROM memories WHERE memory_type = 'episodic'"
-    ).fetchall()
+    with pg._get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, shared FROM memories WHERE memory_type = 'episodic'"
+        ).fetchall()
     pg_ids = {str(r["id"]) for r in rows}
     pg_shared_ids = {str(r["id"]) for r in rows if r["shared"]}
     pg.close()

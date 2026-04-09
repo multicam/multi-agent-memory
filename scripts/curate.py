@@ -42,22 +42,25 @@ def main():
     pg.connect()
 
     # Fetch recent private memories
-    rows = pg._conn.execute(
-        """
-        SELECT id, agent_id, content, created_at
-        FROM memories
-        WHERE shared = FALSE
-          AND memory_type = 'episodic'
-        ORDER BY created_at DESC
-        LIMIT %s
-        """,
-        (args.limit,),
-    ).fetchall()
+    with pg._get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, agent_id, content, created_at
+            FROM memories
+            WHERE shared = FALSE
+              AND memory_type = 'episodic'
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (args.limit,),
+        ).fetchall()
 
     if not rows:
         print("No private memories to review")
+        pg.close()
         return
 
+    reviewed_ids = {str(r["id"]) for r in rows}
     print(f"Reviewing {len(rows)} private memories...")
 
     # Build prompt
@@ -81,67 +84,82 @@ def main():
         promote_ids = json.loads(raw)
     except json.JSONDecodeError:
         print(f"Failed to parse LLM response: {raw[:200]}")
+        pg.close()
         return
 
-    if not promote_ids:
+    if not isinstance(promote_ids, list) or not all(isinstance(x, str) for x in promote_ids):
+        print(f"LLM returned invalid format (expected list of strings): {raw[:200]}")
+        pg.close()
+        return
+
+    # Validate: only promote IDs that were actually in the reviewed batch
+    valid_ids = [pid for pid in promote_ids if pid in reviewed_ids]
+    rejected = len(promote_ids) - len(valid_ids)
+    if rejected:
+        print(f"Rejected {rejected} IDs not in reviewed batch (LLM hallucination)")
+
+    if not valid_ids:
         print("No memories recommended for promotion")
+        pg.close()
         return
 
-    print(f"LLM recommends promoting {len(promote_ids)} memories")
+    print(f"LLM recommends promoting {len(valid_ids)} memories")
 
     if args.dry_run:
-        for pid in promote_ids:
+        for pid in valid_ids:
             matching = [r for r in rows if str(r["id"]) == pid]
             if matching:
                 print(f"  {pid}: {matching[0]['content'][:100]}")
         print("Dry run — no changes made")
+        pg.close()
         return
 
-    # Promote (write-through to JSONL for Diderot pattern integrity)
+    # Promote with per-record transactions (Diderot pattern: PG commit only after JSONL succeeds)
     jsonl = JSONLStorage(config.nas_path)
     promoted = 0
     skipped_jsonl = 0
 
-    for pid in promote_ids:
-        result = pg._conn.execute(
-            """
-            UPDATE memories
-            SET shared = TRUE, shared_by = agent_id, updated_at = NOW()
-            WHERE id = %s AND shared = FALSE
-            RETURNING id, agent_id, content, source_session, provenance, created_at
-            """,
-            (pid,),
-        ).fetchone()
+    with pg._get_conn() as conn:
+        for pid in valid_ids:
+            try:
+                with conn.transaction():
+                    result = conn.execute(
+                        """
+                        UPDATE memories
+                        SET shared = TRUE, shared_by = agent_id, updated_at = NOW()
+                        WHERE id = %s AND shared = FALSE
+                        RETURNING id, agent_id, content, source_session, provenance, created_at
+                        """,
+                        (pid,),
+                    ).fetchone()
 
-        if result is None:
-            continue
+                    if result is None:
+                        continue
 
-        promoted += 1
+                    # Write promoted record to shared JSONL — if this fails,
+                    # the transaction rolls back so PG stays consistent with JSONL
+                    record = {
+                        "id": str(result["id"]),
+                        "agent_id": result["agent_id"],
+                        "timestamp": result["created_at"].isoformat() if result["created_at"] else "",
+                        "type": "episodic",
+                        "content": result["content"],
+                        "session_id": result["source_session"] or "curated",
+                        "metadata": {},
+                        "extraction": result["provenance"] or {},
+                        "promoted": True,
+                    }
+                    jsonl.append_shared(record=record, session_id=result["source_session"] or "curated")
+                    promoted += 1
+            except OSError as e:
+                print(f"  WARNING: JSONL write failed for {pid}, PG rolled back: {e}")
+                skipped_jsonl += 1
 
-        # Write promoted record to shared JSONL
-        record = {
-            "id": str(result["id"]),
-            "agent_id": result["agent_id"],
-            "timestamp": result["created_at"].isoformat() if result["created_at"] else "",
-            "type": "episodic",
-            "content": result["content"],
-            "session_id": result["source_session"] or "curated",
-            "metadata": {},
-            "extraction": result["provenance"] or {},
-            "promoted": True,
-        }
-        try:
-            jsonl.append_shared(record=record, session_id=result["source_session"] or "curated")
-        except OSError as e:
-            print(f"  WARNING: JSONL write failed for {pid}: {e}")
-            skipped_jsonl += 1
-
-    pg._conn.commit()
     pg.close()
 
     print(f"Promoted:      {promoted}")
     print(f"JSONL skipped: {skipped_jsonl}")
-    print(f"Skipped:       {len(promote_ids) - promoted}")
+    print(f"Skipped:       {len(valid_ids) - promoted - skipped_jsonl}")
 
 
 if __name__ == "__main__":
