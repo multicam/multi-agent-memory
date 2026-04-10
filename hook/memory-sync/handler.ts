@@ -157,42 +157,93 @@ const handler = async (event: HookEvent) => {
       }
     }
 
-    // Session-start recall (always runs, even if old session was empty): fetch relevant shared memories for the new session
+    // Session-start recall: try wake_up first (layered), fall back to generic recall
     try {
-      const recalled = await callMemoryServer(apiUrl, "recall", {
-        query: "important facts about JM preferences, tools, infrastructure, project conventions, and lessons learned",
-        agent_id: agentId,
-        limit: 10,
-      });
+      let md: string | null = null;
 
-      const memories = recalled?.result?.content?.[0]?.text;
-      if (memories) {
-        const parsed = JSON.parse(memories);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Filter to meaningful results (>50% similarity)
-          const relevant = parsed.filter((m: any) => !m.similarity || m.similarity > 0.5);
-          if (relevant.length === 0) {
-            return;
+      // Try wake_up (layered recall with importance + decisions)
+      try {
+        const wakeUpResult = await callMemoryServer(apiUrl, "wake_up", {
+          agent_id: agentId,
+        });
+
+        const wakeUpData = wakeUpResult?.result?.content?.[0]?.text;
+        if (wakeUpData) {
+          const parsed = JSON.parse(wakeUpData);
+          const layer1 = parsed.layer_1_critical || [];
+          const layer2 = parsed.layer_2_decisions || [];
+          const tokenEstimate = parsed.token_estimate || 0;
+
+          if (layer1.length > 0 || layer2.length > 0) {
+            const sections: string[] = [];
+            sections.push(`# Recalled Context\n`);
+            sections.push(`_Auto-populated on session start. ~${tokenEstimate} tokens._\n`);
+
+            if (layer1.length > 0) {
+              sections.push(`## Critical Memories\n`);
+              for (const m of layer1) {
+                const src = m.shared_by && m.shared_by !== agentId ? ` -- from ${m.shared_by}` : "";
+                sections.push(`- ${m.content?.slice(0, 200)}${src}`);
+              }
+              sections.push("");
+            }
+
+            if (layer2.length > 0) {
+              sections.push(`## Recent Decisions\n`);
+              for (const m of layer2) {
+                const src = m.shared_by && m.shared_by !== agentId ? ` -- from ${m.shared_by}` : "";
+                sections.push(`- ${m.content?.slice(0, 200)}${src}`);
+              }
+              sections.push("");
+            }
+
+            md = sections.join("\n");
+            console.log(`[memory-sync] wake_up: ${layer1.length} critical + ${layer2.length} decisions (~${tokenEstimate} tokens)`);
           }
-
-          const { writeFileSync, mkdirSync } = await import("node:fs");
-          const { join } = await import("node:path");
-          const wsDir =
-            event.context.workspaceDir ||
-            join(process.env.HOME || "/home/tgds", ".openclaw", "workspace");
-          const memDir = join(wsDir, "memory");
-          mkdirSync(memDir, { recursive: true });
-
-          const lines = relevant.map((m: any) => {
-            const sim = m.similarity ? ` (${(m.similarity * 100).toFixed(0)}%)` : "";
-            const src = m.shared_by && m.shared_by !== agentId ? ` — from ${m.shared_by}` : "";
-            return `- ${m.content?.slice(0, 200)}${sim}${src}`;
-          });
-
-          const md = `# Recalled Context\n\n_Auto-populated on session start. ${relevant.length} memories recalled._\n\n${lines.join("\n")}\n`;
-          writeFileSync(join(memDir, "recalled.md"), md, "utf-8");
-          console.log(`[memory-sync] Recalled ${relevant.length} memories → memory/recalled.md`);
         }
+      } catch {
+        // wake_up not available -- fall back to recall
+      }
+
+      // Fallback: generic recall (deploy ordering safety)
+      if (!md) {
+        const recalled = await callMemoryServer(apiUrl, "recall", {
+          query: "important facts about JM preferences, tools, infrastructure, project conventions, and lessons learned",
+          agent_id: agentId,
+          limit: 10,
+        });
+
+        const memories = recalled?.result?.content?.[0]?.text;
+        if (memories) {
+          const parsed = JSON.parse(memories);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const relevant = parsed.filter((m: any) => !m.similarity || m.similarity > 0.5);
+            if (relevant.length === 0) {
+              return;
+            }
+
+            const lines = relevant.map((m: any) => {
+              const sim = m.similarity ? ` (${(m.similarity * 100).toFixed(0)}%)` : "";
+              const src = m.shared_by && m.shared_by !== agentId ? ` -- from ${m.shared_by}` : "";
+              return `- ${m.content?.slice(0, 200)}${sim}${src}`;
+            });
+
+            md = `# Recalled Context\n\n_Auto-populated on session start. ${relevant.length} memories recalled._\n\n${lines.join("\n")}\n`;
+            console.log(`[memory-sync] Recalled ${relevant.length} memories via fallback recall`);
+          }
+        }
+      }
+
+      // Write recalled.md if we got content from either path
+      if (md) {
+        const { writeFileSync, mkdirSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const wsDir =
+          event.context.workspaceDir ||
+          join(process.env.HOME || "/home/tgds", ".openclaw", "workspace");
+        const memDir = join(wsDir, "memory");
+        mkdirSync(memDir, { recursive: true });
+        writeFileSync(join(memDir, "recalled.md"), md, "utf-8");
       }
     } catch (error: any) {
       console.error(`[memory-sync] Recall failed (non-fatal): ${error.message}`);

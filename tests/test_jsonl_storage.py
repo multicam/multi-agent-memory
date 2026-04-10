@@ -125,6 +125,32 @@ class TestReadAll:
         assert storage.read_all() == []
 
 
+class TestReadAllAgentWithoutEpisodic:
+    """read_all() skips agent dirs that have no episodic/ subdirectory (line 69)."""
+
+    @pytest.mark.unit
+    def test_agent_dir_without_episodic_is_skipped(self, nas, tmp_path):
+        """Agent directory with no episodic/ subdir is silently skipped."""
+        # Create an agent dir with no episodic/ subdirectory inside it
+        (tmp_path / "agents" / "ag-no-episodic").mkdir(parents=True)
+
+        results = nas.read_all()
+        assert results == []
+
+    @pytest.mark.unit
+    def test_mixed_agents_only_returns_records_from_episodic_agents(self, nas, record, tmp_path):
+        """Agents without episodic/ are skipped; those with it are included."""
+        # Agent that has episodic data
+        nas.append(record=record, agent_id="ag-1", session_id="sess-1")
+
+        # Agent directory with no episodic/ subdir
+        (tmp_path / "agents" / "ag-orphan").mkdir(parents=True)
+
+        results = nas.read_all()
+        assert len(results) == 1
+        assert results[0]["id"] == record["id"]
+
+
 class TestIsMounted:
     """specs/jsonl-storage.md — is_mounted scenario."""
 

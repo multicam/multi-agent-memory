@@ -83,6 +83,8 @@ class PGStorage:
         embedding: list[float] | None = None,
         provenance: dict | None = None,
         shared: bool = False,
+        importance: float = 0.5,
+        tags: list[str] | None = None,
     ) -> None:
         """Insert a memory row. Raises on failure."""
         emb_str = str(embedding) if embedding else None
@@ -92,11 +94,11 @@ class PGStorage:
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
+                INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at, importance, tags)
+                VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
+                (memory_id, agent_id, memory_type, text, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at, importance, tags),
             )
             conn.commit()
 
@@ -110,6 +112,8 @@ class PGStorage:
         embeddings: list[list[float]] | None = None,
         provenance: dict | None = None,
         shared: bool = False,
+        importance: float = 0.5,
+        tags: list[str] | None = None,
     ) -> list[str]:
         """Store extracted facts as separate semantic memory rows. Returns IDs."""
         ids = []
@@ -124,11 +128,11 @@ class PGStorage:
 
                     conn.execute(
                         """
-                        INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at)
-                        VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s)
+                        INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at, importance, tags)
+                        VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
-                        (fact_id, agent_id, fact, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at),
+                        (fact_id, agent_id, fact, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at, importance, tags),
                     )
                     ids.append(fact_id)
 
@@ -202,6 +206,72 @@ class PGStorage:
                 (agent_id, limit),
             ).fetchall()
 
+        return [_format_row(r) for r in rows]
+
+    def check_duplicate(
+        self,
+        embedding: list[float],
+        agent_id: str,
+        threshold: float = 0.92,
+    ) -> str | None:
+        """Return existing memory ID if near-duplicate found, else None.
+
+        Uses ORDER BY + LIMIT 1 to leverage HNSW index (not WHERE on computed similarity).
+        """
+        qe = str(embedding)
+        with self._get_conn() as conn:
+            row = conn.execute(
+                """SELECT id, 1 - (embedding <=> %s::vector) AS similarity
+                   FROM memories
+                   WHERE agent_id = %s AND embedding IS NOT NULL
+                   ORDER BY embedding <=> %s::vector
+                   LIMIT 1""",
+                (qe, agent_id, qe),
+            ).fetchone()
+        if row and float(row["similarity"]) > threshold:
+            return str(row["id"])
+        return None
+
+    def recall_important(
+        self,
+        agent_id: str,
+        limit: int = 8,
+    ) -> list[dict]:
+        """Top memories by importance score. Excludes chunks (importance=0)."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at
+                FROM memories
+                WHERE (agent_id = %s OR shared = TRUE)
+                  AND importance > 0
+                ORDER BY importance DESC, created_at DESC
+                LIMIT %s
+                """,
+                (agent_id, limit),
+            ).fetchall()
+        return [_format_row(r) for r in rows]
+
+    def recall_recent_decisions(
+        self,
+        agent_id: str,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Recent decisions with rationale."""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at
+                FROM memories
+                WHERE memory_type = 'semantic'
+                  AND provenance->>'extraction_status' IS NOT NULL
+                  AND (content ILIKE '%%decided%%' OR content ILIKE '%%because%%' OR content ILIKE '%%chose%%')
+                  AND (agent_id = %s OR shared = TRUE)
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (agent_id, limit),
+            ).fetchall()
         return [_format_row(r) for r in rows]
 
     def count(self) -> int:

@@ -9,11 +9,26 @@ from fastmcp import FastMCP
 from src.config import Config
 from src.embeddings import Embedder
 from src.extraction.facts import FactExtractor
+from src.extraction.importance import score_importance
 from src.extraction.promotion import should_promote
 from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage, rrf_merge
 
 log = logging.getLogger("agent-memory")
+
+_CHUNK_SIZE = 800
+_CHUNK_OVERLAP = 100
+
+
+def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
+    """Split text into overlapping chunks."""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + size
+        chunks.append(text[start:end])
+        start = end - overlap
+    return chunks
 
 config = Config.from_env()
 pg = PGStorage(config.pg_url)
@@ -57,8 +72,18 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     except Exception as e:
         log.warning(f"Embedding generation failed: {e}")
 
+    # Dedup check (best-effort -- skipped if PG unavailable or no embedding)
+    if embedding:
+        try:
+            existing_id = pg.check_duplicate(embedding, agent_id)
+            if existing_id:
+                return {"status": "duplicate", "existing_id": existing_id}
+        except Exception:
+            pass  # PG down -- skip dedup, preserve write-ahead guarantee
+
     # Extract facts and determine promotion
     extraction = extractor.extract(text)
+    importance = score_importance(text, extraction)
     promoted = should_promote(extraction)
     provenance = {
         "extraction_model": extraction.model,
@@ -100,6 +125,8 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
             embedding=embedding,
             provenance=provenance,
             shared=promoted,
+            importance=importance,
+            tags=extraction.tags or None,
         )
 
         # Store extracted facts and decisions as separate semantic memories
@@ -120,7 +147,30 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
                 embeddings=sem_embeddings,
                 provenance=provenance,
                 shared=promoted,
+                importance=importance,
+                tags=extraction.tags or None,
             )
+
+        # Chunk long memories for better semantic recall (embedding-only, no extraction)
+        if len(text) > _CHUNK_SIZE and embedding:
+            for chunk in _chunk_text(text, _CHUNK_SIZE, _CHUNK_OVERLAP):
+                try:
+                    chunk_emb = embedder.embed(chunk)
+                    pg.store(
+                        memory_id=str(uuid.uuid4()),
+                        text=chunk,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        created_at=now,
+                        memory_type="episodic",
+                        embedding=chunk_emb,
+                        provenance={"parent_memory_id": memory_id, "chunk": True},
+                        shared=promoted,
+                        importance=0.0,
+                        tags=extraction.tags or None,
+                    )
+                except Exception as e:
+                    log.warning(f"Chunk storage failed: {e}")
 
         pg_ok = True
     except Exception as e:
@@ -136,6 +186,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         "session_id": session_id,
         "created_at": now.isoformat(),
         "promoted": promoted,
+        "importance": round(importance, 2),
         "extraction": {
             "facts": len(extraction.facts),
             "decisions": len(extraction.decisions),
@@ -197,6 +248,42 @@ def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
     # Last resort: recency fallback
     log.warning("Both semantic and BM25 recall failed, falling back to recency")
     return pg.recall(query=query, agent_id=agent_id, limit=limit)
+
+
+@mcp.tool()
+def wake_up(agent_id: str) -> dict:
+    """Load structured memory layers for session start.
+
+    Returns importance-ranked critical memories and recent decisions
+    to bootstrap an agent's context at the beginning of a session.
+
+    Args:
+        agent_id: Which agent is waking up.
+
+    Returns:
+        Layered memory context with token estimate.
+    """
+    if not agent_id.strip():
+        return {"error": "agent_id is required"}
+
+    layer_1: list[dict] = []
+    layer_2: list[dict] = []
+
+    try:
+        layer_1 = pg.recall_important(agent_id, limit=8)
+    except Exception as e:
+        log.warning(f"recall_important failed: {e}")
+
+    try:
+        layer_2 = pg.recall_recent_decisions(agent_id, limit=5)
+    except Exception as e:
+        log.warning(f"recall_recent_decisions failed: {e}")
+
+    return {
+        "layer_1_critical": layer_1,
+        "layer_2_decisions": layer_2,
+        "token_estimate": sum(len(m.get("content", "")) // 4 for m in layer_1 + layer_2),
+    }
 
 
 @mcp.tool()

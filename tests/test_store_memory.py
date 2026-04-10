@@ -23,6 +23,7 @@ def _patch_server_globals(monkeypatch):
     """Replace server module globals with mocks for every test in this file."""
     mock_pg = MagicMock()
     mock_pg.is_connected.return_value = True
+    mock_pg.check_duplicate.return_value = None
 
     mock_jsonl = MagicMock()
     mock_jsonl.is_mounted.return_value = True
