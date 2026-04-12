@@ -3,39 +3,19 @@
 Tests the layered recall protocol for session start.
 """
 
-import os
 import pytest
-from unittest.mock import MagicMock
-
-os.environ.setdefault("PG_URL", "postgresql://mock:mock@localhost/test")
 
 import src.server as server_mod
 
 
 @pytest.fixture(autouse=True)
-def _patch_server_globals(monkeypatch):
-    """Replace server module globals with mocks."""
-    mock_pg = MagicMock()
-    mock_pg.is_connected.return_value = True
-
-    mock_jsonl = MagicMock()
-    mock_jsonl.is_mounted.return_value = True
-
-    mock_embedder = MagicMock()
-    mock_embedder.model_name = "test-model"
-
-    mock_extractor = MagicMock()
-
-    monkeypatch.setattr(server_mod, "pg", mock_pg)
-    monkeypatch.setattr(server_mod, "jsonl", mock_jsonl)
-    monkeypatch.setattr(server_mod, "embedder", mock_embedder)
-    monkeypatch.setattr(server_mod, "extractor", mock_extractor)
-
-    _patch_server_globals.pg = mock_pg
+def _use_server_mocks(server_mocks):
+    """Wire up shared server mocks for all tests in this file."""
+    _use_server_mocks.mocks = server_mocks
 
 
 def _pg():
-    return _patch_server_globals.pg
+    return _use_server_mocks.mocks.pg
 
 
 @pytest.mark.integration

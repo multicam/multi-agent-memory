@@ -1,35 +1,18 @@
 """Tests for memory_status() and main() in server.py.
 
-These cover lines 296 and 306-313:
-  - memory_status() return dict construction (line 296)
-  - main() startup sequence: pg.connect, embedder.load, prints, mcp.run (lines 306-313)
-
-Globals are monkeypatched the same way as test_store_memory.py.
+Covers memory_status() return dict and main() startup sequence.
 """
 
-import os
 import pytest
-from unittest.mock import MagicMock, patch, call
-
-os.environ.setdefault("PG_URL", "postgresql://mock:mock@localhost/test")
+from unittest.mock import MagicMock, patch
 
 from src.config import Config
 import src.server as server_mod
 
 
 @pytest.fixture(autouse=True)
-def _patch_server_globals(monkeypatch):
-    """Replace server module globals with mocks for every test in this file."""
-    mock_pg = MagicMock()
-    mock_pg.is_connected.return_value = True
-
-    mock_jsonl = MagicMock()
-    mock_jsonl.is_mounted.return_value = True
-
-    mock_embedder = MagicMock()
-    mock_embedder.model_name = "test-model"
-    mock_embedder.dimensions = 768
-
+def _use_server_mocks(server_mocks, monkeypatch):
+    """Wire up shared server mocks + a mock config for all tests."""
     mock_config = MagicMock(spec=Config)
     mock_config.nas_path = "/mnt/memory"
     mock_config.anthropic_api_key = "sk-test"
@@ -37,36 +20,30 @@ def _patch_server_globals(monkeypatch):
     mock_config.server_host = "0.0.0.0"
     mock_config.server_port = 8888
 
-    monkeypatch.setattr(server_mod, "pg", mock_pg)
-    monkeypatch.setattr(server_mod, "jsonl", mock_jsonl)
-    monkeypatch.setattr(server_mod, "embedder", mock_embedder)
     monkeypatch.setattr(server_mod, "config", mock_config)
-
-    _patch_server_globals.pg = mock_pg
-    _patch_server_globals.jsonl = mock_jsonl
-    _patch_server_globals.embedder = mock_embedder
-    _patch_server_globals.config = mock_config
+    server_mocks.config = mock_config
+    _use_server_mocks.mocks = server_mocks
 
 
 def _pg():
-    return _patch_server_globals.pg
+    return _use_server_mocks.mocks.pg
 
 
 def _jsonl():
-    return _patch_server_globals.jsonl
+    return _use_server_mocks.mocks.jsonl
 
 
 def _embedder():
-    return _patch_server_globals.embedder
+    return _use_server_mocks.mocks.embedder
 
 
 def _config():
-    return _patch_server_globals.config
+    return _use_server_mocks.mocks.config
 
 
 @pytest.mark.unit
 class TestMemoryStatus:
-    """memory_status() return dict — line 296."""
+    """memory_status() return dict."""
 
     def test_returns_all_expected_keys(self):
         """memory_status returns pg, nas, nas_path, embedding_model, extraction."""
@@ -131,7 +108,7 @@ class TestMemoryStatus:
 
 @pytest.mark.unit
 class TestMain:
-    """main() startup sequence — lines 306-313."""
+    """main() startup sequence."""
 
     def test_calls_pg_connect(self):
         """main() calls pg.connect() to establish the database connection."""

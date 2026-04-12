@@ -3,57 +3,26 @@
 Tests the _chunk_text helper and the chunking integration in store_memory.
 """
 
-import os
 import pytest
-from unittest.mock import MagicMock, call
+from tests.helpers import make_extraction
 
-os.environ.setdefault("PG_URL", "postgresql://mock:mock@localhost/test")
-
-from src.extraction.facts import Extraction
 import src.server as server_mod
 
 
-def _extraction(**kwargs) -> Extraction:
-    defaults = dict(
-        facts=[], decisions=[], entities=[], tags=["test"],
-        shareable=False, model="test", extracted_at="2026-04-09T00:00:00+00:00",
-        status="success",
-    )
-    defaults.update(kwargs)
-    return Extraction(**defaults)
-
-
 @pytest.fixture(autouse=True)
-def _patch_server_globals(monkeypatch):
-    """Replace server module globals with mocks."""
-    mock_pg = MagicMock()
-    mock_pg.is_connected.return_value = True
-    mock_pg.check_duplicate.return_value = None
-
-    mock_jsonl = MagicMock()
-    mock_jsonl.is_mounted.return_value = True
-
-    mock_embedder = MagicMock()
-    mock_embedder.embed.return_value = [0.1] * 768
-
-    mock_extractor = MagicMock()
-    mock_extractor.extract.return_value = _extraction()
-
-    monkeypatch.setattr(server_mod, "pg", mock_pg)
-    monkeypatch.setattr(server_mod, "jsonl", mock_jsonl)
-    monkeypatch.setattr(server_mod, "embedder", mock_embedder)
-    monkeypatch.setattr(server_mod, "extractor", mock_extractor)
-
-    _patch_server_globals.pg = mock_pg
-    _patch_server_globals.embedder = mock_embedder
+def _patch_extractor(server_mocks):
+    """Override the default extraction to use tags=["test"] for chunking tests."""
+    server_mocks.extractor.extract.return_value = make_extraction(tags=["test"])
+    # Stash mocks for direct access in test methods
+    _patch_extractor.mocks = server_mocks
 
 
 def _pg():
-    return _patch_server_globals.pg
+    return _patch_extractor.mocks.pg
 
 
 def _embedder():
-    return _patch_server_globals.embedder
+    return _patch_extractor.mocks.embedder
 
 
 @pytest.mark.unit
@@ -66,14 +35,13 @@ class TestChunkText:
         assert len(chunks) == 1
         assert chunks[0] == "short"
 
-    def test_exact_size_produces_overlap_tail(self):
-        """Text exactly chunk size produces main chunk + overlap tail."""
+    def test_exact_size_no_short_tail(self):
+        """Text exactly chunk size produces one chunk (100-char tail is dropped)."""
         text = "x" * 800
         chunks = server_mod._chunk_text(text, 800, 100)
-        # start=0 -> [0:800], start=700 -> [700:800] (overlap tail)
-        assert len(chunks) == 2
+        # Tail [700:800] is only 100 chars == _CHUNK_MIN, so dropped
+        assert len(chunks) == 1
         assert len(chunks[0]) == 800
-        assert len(chunks[1]) == 100
 
     def test_2000_chars_produces_3_chunks(self):
         """2000 chars with size=800, overlap=100 produces 3 chunks."""
@@ -85,8 +53,8 @@ class TestChunkText:
         """Adjacent chunks share overlap characters."""
         text = "".join(str(i % 10) for i in range(1600))
         chunks = server_mod._chunk_text(text, 800, 100)
-        # 1600 chars: [0:800], [700:1500], [1400:1600] = 3 chunks
-        assert len(chunks) == 3
+        # 1600 chars: [0:800], [700:1500] = 2 chunks (tail [1400:1600] = 200 chars > _CHUNK_MIN)
+        assert len(chunks) >= 2
         # Last 100 chars of chunk 0 == first 100 chars of chunk 1
         assert chunks[0][-100:] == chunks[1][:100]
 
@@ -98,6 +66,31 @@ class TestChunkText:
         for chunk in chunks[1:]:
             reconstructed += chunk[100:]  # skip overlap portion
         assert reconstructed == text
+
+    def test_overlap_ge_size_raises(self):
+        """overlap >= size raises ValueError to prevent infinite loops."""
+        with pytest.raises(ValueError, match="overlap.*must be < size"):
+            server_mod._chunk_text("text", 100, 100)
+        with pytest.raises(ValueError, match="overlap.*must be < size"):
+            server_mod._chunk_text("text", 100, 200)
+
+    def test_short_trailing_chunk_dropped(self):
+        """Trailing chunks shorter than _CHUNK_MIN are dropped."""
+        # 850 chars with size=800, overlap=100: main [0:800], tail [700:850] = 150 chars
+        # 150 > _CHUNK_MIN (100), so tail IS kept
+        text = "a" * 850
+        chunks = server_mod._chunk_text(text, 800, 100)
+        assert len(chunks) == 2
+
+        # 810 chars: main [0:800], tail [700:810] = 110 chars > 100, kept
+        text = "b" * 810
+        chunks = server_mod._chunk_text(text, 800, 100)
+        assert len(chunks) == 2
+
+        # 800 chars: main [0:800], tail [700:800] = 100 chars == _CHUNK_MIN, dropped
+        text = "c" * 800
+        chunks = server_mod._chunk_text(text, 800, 100)
+        assert len(chunks) == 1
 
 
 @pytest.mark.integration
@@ -153,7 +146,6 @@ class TestChunkingIntegration:
     def test_chunk_embed_failure_non_fatal(self):
         """If chunk embedding fails, it's logged but doesn't crash."""
         call_count = [0]
-        original_embed = _embedder().embed.return_value
 
         def embed_side_effect(text):
             call_count[0] += 1

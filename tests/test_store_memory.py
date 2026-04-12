@@ -2,74 +2,42 @@
 
 These mock the external dependencies (PG, NAS, Embedder, Extractor)
 to test the orchestration logic without real infrastructure.
-
-The server module creates globals at import time (Config.from_env(), PGStorage,
-etc.), so we set PG_URL before importing and then replace the globals with mocks.
 """
 
-import os
 import pytest
-from unittest.mock import MagicMock, patch
+from tests.helpers import make_extraction
 
-# Set PG_URL before server.py is imported anywhere
-os.environ.setdefault("PG_URL", "postgresql://mock:mock@localhost/test")
-
-from src.extraction.facts import Extraction
 import src.server as server_mod
 
 
 @pytest.fixture(autouse=True)
-def _patch_server_globals(monkeypatch):
-    """Replace server module globals with mocks for every test in this file."""
-    mock_pg = MagicMock()
-    mock_pg.is_connected.return_value = True
-    mock_pg.check_duplicate.return_value = None
-
-    mock_jsonl = MagicMock()
-    mock_jsonl.is_mounted.return_value = True
-
-    mock_embedder = MagicMock()
-    mock_embedder.embed.return_value = [0.1] * 768
-    mock_embedder.model_name = "test-model"
-
-    mock_extractor = MagicMock()
-    mock_extractor.extract.return_value = Extraction(
+def _use_server_mocks(server_mocks):
+    """Wire up shared server mocks with a rich default extraction."""
+    server_mocks.extractor.extract.return_value = make_extraction(
         facts=["fact1", "fact2"],
         decisions=["Decided X because Y"],
         entities=[{"name": "Redis", "type": "service"}],
         tags=["infrastructure"],
         shareable=True,
         model="test-model",
-        extracted_at="2026-03-24T00:00:00+00:00",
-        status="success",
     )
-
-    monkeypatch.setattr(server_mod, "pg", mock_pg)
-    monkeypatch.setattr(server_mod, "jsonl", mock_jsonl)
-    monkeypatch.setattr(server_mod, "embedder", mock_embedder)
-    monkeypatch.setattr(server_mod, "extractor", mock_extractor)
-
-    # Expose mocks for tests that need direct access
-    _patch_server_globals.pg = mock_pg
-    _patch_server_globals.jsonl = mock_jsonl
-    _patch_server_globals.embedder = mock_embedder
-    _patch_server_globals.extractor = mock_extractor
+    _use_server_mocks.mocks = server_mocks
 
 
 def _pg():
-    return _patch_server_globals.pg
+    return _use_server_mocks.mocks.pg
 
 
 def _jsonl():
-    return _patch_server_globals.jsonl
+    return _use_server_mocks.mocks.jsonl
 
 
 def _embedder():
-    return _patch_server_globals.embedder
+    return _use_server_mocks.mocks.embedder
 
 
 def _extractor():
-    return _patch_server_globals.extractor
+    return _use_server_mocks.mocks.extractor
 
 
 @pytest.mark.integration
@@ -164,12 +132,9 @@ class TestStoreMemoryPromotion:
 
     def test_private_memory_not_shared(self):
         """Non-shareable extraction does NOT trigger append_shared."""
-        _extractor().extract.return_value = Extraction(
+        _extractor().extract.return_value = make_extraction(
             facts=["debugging note"],
             tags=["debugging", "wip"],
-            shareable=False,
-            model="test",
-            extracted_at="2026-03-24T00:00:00+00:00",
         )
 
         server_mod.store_memory("debug note", "ag-1", "sess-1")

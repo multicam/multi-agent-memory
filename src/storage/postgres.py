@@ -150,16 +150,17 @@ class PGStorage:
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
+                WITH qv AS (SELECT %s::vector AS vec)
                 SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM memories
+                       1 - (embedding <=> qv.vec) AS similarity
+                FROM memories, qv
                 WHERE (agent_id = %s OR shared = TRUE)
                   AND embedding IS NOT NULL
-                  AND 1 - (embedding <=> %s::vector) > %s
-                ORDER BY embedding <=> %s::vector
+                  AND 1 - (embedding <=> qv.vec) > %s
+                ORDER BY embedding <=> qv.vec
                 LIMIT %s
                 """,
-                (qe, agent_id, qe, threshold, qe, limit),
+                (qe, agent_id, threshold, limit),
             ).fetchall()
 
         return [_format_row(r, extra_fields=("similarity",)) for r in rows]
@@ -216,17 +217,19 @@ class PGStorage:
     ) -> str | None:
         """Return existing memory ID if near-duplicate found, else None.
 
-        Uses ORDER BY + LIMIT 1 to leverage HNSW index (not WHERE on computed similarity).
+        Uses a CTE to bind the query vector once, then ORDER BY + LIMIT 1
+        to leverage the HNSW index (not WHERE on computed similarity).
         """
         qe = str(embedding)
         with self._get_conn() as conn:
             row = conn.execute(
-                """SELECT id, 1 - (embedding <=> %s::vector) AS similarity
-                   FROM memories
+                """WITH qv AS (SELECT %s::vector AS vec)
+                   SELECT id, 1 - (embedding <=> qv.vec) AS similarity
+                   FROM memories, qv
                    WHERE agent_id = %s AND embedding IS NOT NULL
-                   ORDER BY embedding <=> %s::vector
+                   ORDER BY embedding <=> qv.vec
                    LIMIT 1""",
-                (qe, agent_id, qe),
+                (qe, agent_id),
             ).fetchone()
         if row and float(row["similarity"]) > threshold:
             return str(row["id"])

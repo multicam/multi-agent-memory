@@ -21,12 +21,22 @@ _CHUNK_OVERLAP = 100
 
 
 def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
-    """Split text into overlapping chunks."""
+    """Split text into overlapping chunks.
+
+    Raises ValueError if overlap >= size (would loop forever).
+    Drops trailing chunks that are no larger than the overlap, since
+    they contain no new information beyond what the previous chunk covers.
+    """
+    if overlap >= size:
+        raise ValueError(f"overlap ({overlap}) must be < size ({size})")
     chunks = []
     start = 0
     while start < len(text):
         end = start + size
-        chunks.append(text[start:end])
+        chunk = text[start:end]
+        if len(chunk) <= overlap and chunks:
+            break  # tail is fully covered by previous chunk's overlap
+        chunks.append(chunk)
         start = end - overlap
     return chunks
 
