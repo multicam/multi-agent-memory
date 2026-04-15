@@ -42,7 +42,7 @@ def main():
     pg.connect()
 
     # Fetch recent private memories
-    with pg._get_conn() as conn:
+    with pg.get_conn() as conn:
         rows = conn.execute(
             """
             SELECT id, agent_id, content, created_at
@@ -119,7 +119,7 @@ def main():
     promoted = 0
     skipped_jsonl = 0
 
-    with pg._get_conn() as conn:
+    with pg.get_conn() as conn:
         for pid in valid_ids:
             try:
                 with conn.transaction():

@@ -416,6 +416,116 @@ class TestRecallRecentDecisions:
         pg._conn.execute.return_value.fetchall.return_value = []
         assert pg.recall_recent_decisions("ag-1") == []
 
+    def test_recall_recent_decisions_uses_subtype_filter(self, pg):
+        """recall_recent_decisions() SQL prefers structural subtype='decision'.
+
+        Post-2026-04-15 P1 fix: decisions are tagged structurally at write
+        time. ILIKE stays as a legacy-row fallback, but the primary filter
+        is provenance->>'subtype' = 'decision'.
+        """
+        pg._conn.execute.return_value.fetchall.return_value = []
+        pg.recall_recent_decisions("ag-1")
+        sql = pg._conn.execute.call_args[0][0]
+        assert "provenance->>'subtype' = 'decision'" in sql
+
+
+# ---------------------------------------------------------------------------
+# store_with_facts_and_chunks()  — transactional aggregate write
+# ---------------------------------------------------------------------------
+
+class TestStoreWithFactsAndChunks:
+    """2026-04-15 P1 fix: episodic + semantic + chunks in one transaction."""
+
+    def _setup(self, pg):
+        """Wire pg._conn.transaction() as a no-op context manager."""
+        pg._conn.transaction.return_value.__enter__ = MagicMock(return_value=None)
+        pg._conn.transaction.return_value.__exit__ = MagicMock(return_value=False)
+
+    def test_single_transaction_for_all_writes(self, pg):
+        """Episodic + facts + decisions + chunks share one transaction."""
+        self._setup(pg)
+        pg.store_with_facts_and_chunks(
+            memory_id="m1",
+            text="parent text",
+            agent_id="ag-1",
+            session_id="sess-1",
+            created_at=NOW,
+            facts=["f1"],
+            decisions=["d1"],
+            chunks=["c1", "c2"],
+        )
+        # One transaction spans everything
+        pg._conn.transaction.assert_called_once()
+        # Expect: 1 episodic + 2 semantic (fact + decision) + 2 chunks = 5 executes
+        assert pg._conn.execute.call_count == 5
+
+    def test_empty_facts_and_chunks(self, pg):
+        """Minimal write (episodic only) issues exactly one insert."""
+        self._setup(pg)
+        pg.store_with_facts_and_chunks(
+            memory_id="m1",
+            text="just text",
+            agent_id="ag-1",
+            session_id="sess-1",
+            created_at=NOW,
+        )
+        assert pg._conn.execute.call_count == 1
+
+    def test_subtypes_written_into_provenance(self, pg):
+        """Facts get subtype='fact'; decisions get subtype='decision'."""
+        import json
+        self._setup(pg)
+        pg.store_with_facts_and_chunks(
+            memory_id="m1",
+            text="parent",
+            agent_id="ag-1",
+            session_id="sess-1",
+            created_at=NOW,
+            facts=["F"],
+            decisions=["D"],
+        )
+        # 2nd call = fact insert, 3rd call = decision insert
+        fact_params = pg._conn.execute.call_args_list[1][0][1]
+        dec_params = pg._conn.execute.call_args_list[2][0][1]
+        # provenance is the 6th positional param in the INSERT
+        fact_prov = json.loads(fact_params[5])
+        dec_prov = json.loads(dec_params[5])
+        assert fact_prov["subtype"] == "fact"
+        assert dec_prov["subtype"] == "decision"
+
+    def test_chunk_rows_carry_parent_reference(self, pg):
+        """Chunk rows have provenance.parent_memory_id + chunk=True."""
+        import json
+        self._setup(pg)
+        pg.store_with_facts_and_chunks(
+            memory_id="parent-xyz",
+            text="parent",
+            agent_id="ag-1",
+            session_id="sess-1",
+            created_at=NOW,
+            chunks=["chunk a"],
+        )
+        # 2nd call = chunk insert (no facts/decisions)
+        chunk_params = pg._conn.execute.call_args_list[1][0][1]
+        chunk_prov = json.loads(chunk_params[5])
+        assert chunk_prov["parent_memory_id"] == "parent-xyz"
+        assert chunk_prov["chunk"] is True
+
+    def test_rollback_propagates_chunk_failure(self, pg):
+        """If a chunk insert raises, the error propagates so the transaction rolls back."""
+        self._setup(pg)
+        # 1st (episodic) OK, 2nd (chunk) raises
+        pg._conn.execute.side_effect = [MagicMock(), RuntimeError("chunk blew up")]
+        with pytest.raises(RuntimeError, match="chunk blew up"):
+            pg.store_with_facts_and_chunks(
+                memory_id="m1",
+                text="parent",
+                agent_id="ag-1",
+                session_id="sess-1",
+                created_at=NOW,
+                chunks=["c1"],
+            )
+
 
 # ---------------------------------------------------------------------------
 # count()  — lines 278-280

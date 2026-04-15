@@ -64,6 +64,14 @@ class PGStorage:
         with self._pool.connection() as conn:
             yield conn
 
+    # Public alias. Scripts and future non-test callers should use this;
+    # _get_conn is kept for back-compat and the test-only mock path.
+    @contextmanager
+    def get_conn(self):
+        """Public connection context manager. Same semantics as _get_conn."""
+        with self._get_conn() as conn:
+            yield conn
+
     def is_connected(self) -> bool:
         try:
             with self._get_conn() as conn:
@@ -114,29 +122,132 @@ class PGStorage:
         shared: bool = False,
         importance: float = 0.5,
         tags: list[str] | None = None,
+        subtypes: list[str] | None = None,
+        conn=None,
     ) -> list[str]:
-        """Store extracted facts as separate semantic memory rows. Returns IDs."""
+        """Store extracted facts as separate semantic memory rows. Returns IDs.
+
+        subtypes: optional parallel list of "fact"/"decision" labels written
+            into each row's provenance.subtype. Used by recall_recent_decisions
+            as a structural discriminator (replaces English ILIKE matching).
+        conn: optional existing connection — if given, rows are appended to
+            that connection's in-flight transaction (caller owns commit).
+        """
         ids = []
+        shared_by = agent_id if shared else None
+
+        def _insert_all(c):
+            for i, fact in enumerate(facts):
+                fact_id = str(uuid.uuid4())
+                emb_str = str(embeddings[i]) if embeddings and i < len(embeddings) else None
+
+                # Per-row provenance: merge subtype into the provided provenance dict.
+                per_prov = dict(provenance or {})
+                per_prov["source_memory_id"] = source_memory_id
+                if subtypes and i < len(subtypes):
+                    per_prov["subtype"] = subtypes[i]
+                per_prov_json = json.dumps(per_prov)
+
+                c.execute(
+                    """
+                    INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at, importance, tags)
+                    VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (fact_id, agent_id, fact, session_id, emb_str, per_prov_json, shared, shared_by, created_at, created_at, importance, tags),
+                )
+                ids.append(fact_id)
+
+        if conn is not None:
+            _insert_all(conn)
+        else:
+            with self._get_conn() as c:
+                with c.transaction():
+                    _insert_all(c)
+
+        return ids
+
+    def store_with_facts_and_chunks(
+        self,
+        memory_id: str,
+        text: str,
+        agent_id: str,
+        session_id: str,
+        created_at: datetime,
+        embedding: list[float] | None = None,
+        provenance: dict | None = None,
+        shared: bool = False,
+        importance: float = 0.5,
+        tags: list[str] | None = None,
+        facts: list[str] | None = None,
+        decisions: list[str] | None = None,
+        fact_embeddings: list[list[float]] | None = None,
+        chunks: list[str] | None = None,
+        chunk_embeddings: list[list[float]] | None = None,
+    ) -> None:
+        """Write an episodic row + its semantic facts/decisions + text chunks
+        in a single transaction, closing the partial-failure window flagged
+        in the 2026-04-15 review (P1 write-ahead softness).
+
+        Either the whole tree commits or nothing does. Chunks carry
+        provenance={parent_memory_id, chunk: True}; semantic rows carry
+        provenance.subtype='fact' or 'decision' for structural filtering.
+        """
+        emb_str = str(embedding) if embedding else None
         prov_json = json.dumps(provenance) if provenance else None
         shared_by = agent_id if shared else None
 
+        facts = facts or []
+        decisions = decisions or []
+        all_semantic = facts + decisions
+        subtypes = (["fact"] * len(facts)) + (["decision"] * len(decisions))
+
+        chunks = chunks or []
+
         with self._get_conn() as conn:
             with conn.transaction():
-                for i, fact in enumerate(facts):
-                    fact_id = str(uuid.uuid4())
-                    emb_str = str(embeddings[i]) if embeddings and i < len(embeddings) else None
+                # 1. Episodic row
+                conn.execute(
+                    """
+                    INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at, importance, tags)
+                    VALUES (%s, %s, 'episodic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (memory_id, agent_id, text, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at, importance, tags),
+                )
 
+                # 2. Semantic rows (facts + decisions) — share the same conn+tx
+                if all_semantic:
+                    self.store_facts(
+                        facts=all_semantic,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        source_memory_id=memory_id,
+                        created_at=created_at,
+                        embeddings=fact_embeddings,
+                        provenance=provenance,
+                        shared=shared,
+                        importance=importance,
+                        tags=tags,
+                        subtypes=subtypes,
+                        conn=conn,
+                    )
+
+                # 3. Chunks — each gets its own id but shares the parent provenance
+                for i, chunk in enumerate(chunks):
+                    chunk_id = str(uuid.uuid4())
+                    chunk_emb = None
+                    if chunk_embeddings and i < len(chunk_embeddings) and chunk_embeddings[i] is not None:
+                        chunk_emb = str(chunk_embeddings[i])
+                    chunk_prov = {"parent_memory_id": memory_id, "chunk": True}
                     conn.execute(
                         """
                         INSERT INTO memories (id, agent_id, memory_type, content, source_session, embedding, provenance, shared, shared_by, created_at, updated_at, importance, tags)
-                        VALUES (%s, %s, 'semantic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, 'episodic', %s, %s, %s::vector, %s::jsonb, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
-                        (fact_id, agent_id, fact, session_id, emb_str, prov_json, shared, shared_by, created_at, created_at, importance, tags),
+                        (chunk_id, agent_id, chunk, session_id, chunk_emb, json.dumps(chunk_prov), shared, shared_by, created_at, created_at, 0.0, tags),
                     )
-                    ids.append(fact_id)
-
-        return ids
 
     def recall_semantic(
         self,
@@ -260,16 +371,26 @@ class PGStorage:
         agent_id: str,
         limit: int = 5,
     ) -> list[dict]:
-        """Recent decisions with rationale."""
+        """Recent decisions with rationale.
+
+        Prefers the structural `provenance.subtype = 'decision'` discriminator
+        written at store-time. Falls back to English ILIKE matching for legacy
+        rows written before the subtype was introduced (2026-04-15 review P1).
+        """
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
                 SELECT id, agent_id, memory_type, content, source_session, shared, shared_by, created_at
                 FROM memories
                 WHERE memory_type = 'semantic'
-                  AND provenance->>'extraction_status' IS NOT NULL
-                  AND (content ILIKE '%%decided%%' OR content ILIKE '%%because%%' OR content ILIKE '%%chose%%')
                   AND (agent_id = %s OR shared = TRUE)
+                  AND (
+                        provenance->>'subtype' = 'decision'
+                        OR (
+                            provenance->>'subtype' IS NULL
+                            AND (content ILIKE '%%decided%%' OR content ILIKE '%%because%%' OR content ILIKE '%%chose%%')
+                        )
+                      )
                 ORDER BY created_at DESC
                 LIMIT %s
                 """,

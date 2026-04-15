@@ -109,6 +109,8 @@ def server_mocks(monkeypatch):
 
     mock_embedder = MagicMock()
     mock_embedder.embed.return_value = [0.1] * 768
+    # embed_batch returns one vector per input text by default
+    mock_embedder.embed_batch.side_effect = lambda texts: [[0.1] * 768 for _ in texts]
     mock_embedder.model_name = "test-model"
     mock_embedder.dimensions = 768
 

@@ -102,7 +102,7 @@ class TestStoreMemoryWriteAhead:
         """JSONL append is called before PG store."""
         call_order = []
         _jsonl().append.side_effect = lambda **kw: call_order.append("jsonl")
-        _pg().store.side_effect = lambda **kw: call_order.append("pg")
+        _pg().store_with_facts_and_chunks.side_effect = lambda **kw: call_order.append("pg")
 
         server_mod.store_memory("test content", "ag-1", "sess-1")
 
@@ -112,7 +112,7 @@ class TestStoreMemoryWriteAhead:
 
     def test_pg_failure_still_has_jsonl(self):
         """If PG fails, JSONL is still ok."""
-        _pg().store.side_effect = Exception("PG down")
+        _pg().store_with_facts_and_chunks.side_effect = Exception("PG down")
 
         result = server_mod.store_memory("test content", "ag-1", "sess-1")
 
@@ -148,7 +148,7 @@ class TestStoreMemoryFailure:
     def test_both_backends_fail(self):
         """Both JSONL and PG failing returns error."""
         _jsonl().append.side_effect = OSError("NAS down")
-        _pg().store.side_effect = Exception("PG down")
+        _pg().store_with_facts_and_chunks.side_effect = Exception("PG down")
 
         result = server_mod.store_memory("test", "ag-1", "sess-1")
         assert "error" in result
@@ -164,6 +164,9 @@ class TestStoreMemoryFailure:
         assert result["storage"]["jsonl"] == "ok"
 
     def test_facts_stored_as_semantic_rows(self):
-        """Extracted facts are stored via pg.store_facts()."""
+        """Extracted facts and decisions are passed to the aggregate PG call."""
         server_mod.store_memory("Redis runs on port 6379", "ag-1", "sess-1")
-        _pg().store_facts.assert_called_once()
+        _pg().store_with_facts_and_chunks.assert_called_once()
+        kw = _pg().store_with_facts_and_chunks.call_args.kwargs
+        assert kw["facts"] == ["fact1", "fact2"]
+        assert kw["decisions"] == ["Decided X because Y"]

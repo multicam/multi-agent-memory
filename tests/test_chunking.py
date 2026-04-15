@@ -95,69 +95,61 @@ class TestChunkText:
 
 @pytest.mark.integration
 class TestChunkingIntegration:
-    """specs/chunking.md -- store_memory chunking integration."""
+    """specs/chunking.md -- store_memory chunking integration.
+
+    After the 2026-04-15 P1 fix, store_memory calls the aggregate
+    PGStorage.store_with_facts_and_chunks() in a single transaction. Tests
+    now inspect that call's kwargs.
+    """
 
     def test_short_text_no_chunks(self):
-        """Text under 800 chars does not produce chunk rows."""
+        """Text under 800 chars passes an empty chunks list to the aggregate."""
         server_mod.store_memory("short text", "ag-1", "sess-1")
 
-        # Only the main store call (no chunk stores)
-        assert _pg().store.call_count == 1
+        _pg().store_with_facts_and_chunks.assert_called_once()
+        kw = _pg().store_with_facts_and_chunks.call_args.kwargs
+        assert kw["chunks"] == []
 
     def test_long_text_produces_chunks(self):
-        """Text over 800 chars produces chunk rows in PG."""
+        """Text over 800 chars passes a 3-element chunks list to the aggregate."""
         long_text = "x" * 2000
         server_mod.store_memory(long_text, "ag-1", "sess-1")
 
-        # 1 main store + 3 chunk stores = 4 total
-        assert _pg().store.call_count == 4
+        kw = _pg().store_with_facts_and_chunks.call_args.kwargs
+        assert len(kw["chunks"]) == 3
 
-    def test_chunk_importance_is_zero(self):
-        """Chunk rows have importance=0.0."""
+    def test_chunk_embeddings_passed_through(self):
+        """chunk_embeddings arg carries one vector per chunk."""
         long_text = "y" * 2000
         server_mod.store_memory(long_text, "ag-1", "sess-1")
 
-        # Check chunk store calls (all except first which is the main memory)
-        chunk_calls = _pg().store.call_args_list[1:]
-        for c in chunk_calls:
-            assert c.kwargs.get("importance") == 0.0
+        kw = _pg().store_with_facts_and_chunks.call_args.kwargs
+        assert len(kw["chunk_embeddings"]) == len(kw["chunks"])
 
-    def test_chunk_provenance_has_parent(self):
-        """Chunk rows have parent_memory_id and chunk=True in provenance."""
+    def test_chunk_list_matches_chunk_text_helper(self):
+        """server.store_memory passes the output of _chunk_text to PG."""
         long_text = "z" * 2000
-        result = server_mod.store_memory(long_text, "ag-1", "sess-1")
-        parent_id = result["id"]
-
-        chunk_calls = _pg().store.call_args_list[1:]
-        for c in chunk_calls:
-            prov = c.kwargs.get("provenance", {})
-            assert prov["parent_memory_id"] == parent_id
-            assert prov["chunk"] is True
-
-    def test_chunk_type_is_episodic(self):
-        """Chunk rows have memory_type='episodic'."""
-        long_text = "w" * 2000
         server_mod.store_memory(long_text, "ag-1", "sess-1")
 
-        chunk_calls = _pg().store.call_args_list[1:]
-        for c in chunk_calls:
-            assert c.kwargs.get("memory_type") == "episodic"
+        kw = _pg().store_with_facts_and_chunks.call_args.kwargs
+        expected = server_mod._chunk_text(long_text, 800, 100)
+        assert kw["chunks"] == expected
 
     def test_chunk_embed_failure_non_fatal(self):
-        """If chunk embedding fails, it's logged but doesn't crash."""
-        call_count = [0]
+        """If chunk embedding fails, chunk_embeddings becomes [None...] and store still runs."""
+        def batch_side_effect(texts):
+            # Fail on the chunk batch (size > 1 in this test -- 3 chunks)
+            if len(texts) > 1:
+                raise RuntimeError("embed failed for chunks")
+            return [[0.1] * 768 for _ in texts]
 
-        def embed_side_effect(text):
-            call_count[0] += 1
-            if call_count[0] > 1:  # first call is for main memory
-                raise RuntimeError("embed failed for chunk")
-            return [0.1] * 768
-
-        _embedder().embed.side_effect = embed_side_effect
+        _embedder().embed_batch.side_effect = batch_side_effect
 
         long_text = "v" * 2000
         result = server_mod.store_memory(long_text, "ag-1", "sess-1")
 
-        # Main store succeeded even though chunk embeds failed
+        # Main store still succeeded; chunk_embeddings is a list of Nones
         assert "id" in result
         assert "error" not in result
+        kw = _pg().store_with_facts_and_chunks.call_args.kwargs
+        assert all(e is None for e in kw["chunk_embeddings"])

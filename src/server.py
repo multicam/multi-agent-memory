@@ -167,7 +167,30 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
 
     pg_ok = False
     try:
-        pg.store(
+        # Pre-compute semantic embeddings (best-effort -- parse failure is non-fatal)
+        all_semantic = extraction.facts + extraction.decisions
+        sem_embeddings = None
+        if all_semantic:
+            try:
+                sem_embeddings = embedder.embed_batch(all_semantic)
+            except Exception as e:
+                log.warning(f"Semantic embedding failed: {e}")
+
+        # Pre-compute chunks + chunk embeddings outside the transaction so an
+        # embedder failure doesn't roll back the main insert.
+        chunks: list[str] = []
+        chunk_embeddings: list[list[float] | None] = []
+        if len(text) > _CHUNK_SIZE and embedding:
+            chunks = _chunk_text(text, _CHUNK_SIZE, _CHUNK_OVERLAP)
+            try:
+                chunk_embeddings = embedder.embed_batch(chunks)
+            except Exception as e:
+                log.warning(f"Chunk embedding failed: {e}")
+                chunk_embeddings = [None] * len(chunks)
+
+        # Single transaction for episodic + semantic + chunks. Fixes the
+        # partial-failure window flagged in the 2026-04-15 review (P1).
+        pg.store_with_facts_and_chunks(
             memory_id=memory_id,
             text=text,
             agent_id=agent_id,
@@ -178,50 +201,12 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
             shared=promoted,
             importance=importance,
             tags=extraction.tags or None,
+            facts=extraction.facts,
+            decisions=extraction.decisions,
+            fact_embeddings=sem_embeddings,
+            chunks=chunks,
+            chunk_embeddings=chunk_embeddings,
         )
-
-        # Store extracted facts and decisions as separate semantic memories
-        all_semantic = extraction.facts + extraction.decisions
-        if all_semantic:
-            sem_embeddings = None
-            try:
-                sem_embeddings = [embedder.embed(s) for s in all_semantic]
-            except Exception as e:
-                log.warning(f"Semantic embedding failed: {e}")
-
-            pg.store_facts(
-                facts=all_semantic,
-                agent_id=agent_id,
-                session_id=session_id,
-                source_memory_id=memory_id,
-                created_at=now,
-                embeddings=sem_embeddings,
-                provenance=provenance,
-                shared=promoted,
-                importance=importance,
-                tags=extraction.tags or None,
-            )
-
-        # Chunk long memories for better semantic recall (embedding-only, no extraction)
-        if len(text) > _CHUNK_SIZE and embedding:
-            for chunk in _chunk_text(text, _CHUNK_SIZE, _CHUNK_OVERLAP):
-                try:
-                    chunk_emb = embedder.embed(chunk)
-                    pg.store(
-                        memory_id=str(uuid.uuid4()),
-                        text=chunk,
-                        agent_id=agent_id,
-                        session_id=session_id,
-                        created_at=now,
-                        memory_type="episodic",
-                        embedding=chunk_emb,
-                        provenance={"parent_memory_id": memory_id, "chunk": True},
-                        shared=promoted,
-                        importance=0.0,
-                        tags=extraction.tags or None,
-                    )
-                except Exception as e:
-                    log.warning(f"Chunk storage failed: {e}")
 
         pg_ok = True
     except Exception as e:

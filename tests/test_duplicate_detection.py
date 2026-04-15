@@ -36,8 +36,8 @@ class TestDuplicateDetection:
 
         assert result["status"] == "duplicate"
         assert result["existing_id"] == "existing-uuid-123"
-        # Should NOT have called store
-        _pg().store.assert_not_called()
+        # Should NOT have called the aggregate PG writer
+        _pg().store_with_facts_and_chunks.assert_not_called()
 
     def test_no_duplicate_proceeds_normally(self):
         """Below threshold proceeds with normal storage."""
@@ -47,7 +47,7 @@ class TestDuplicateDetection:
 
         assert "id" in result
         assert "status" not in result or result.get("status") != "duplicate"
-        _pg().store.assert_called_once()
+        _pg().store_with_facts_and_chunks.assert_called_once()
 
     def test_pg_failure_skips_dedup(self):
         """PG exception during dedup check is swallowed, storage continues."""
