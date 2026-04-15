@@ -7,7 +7,6 @@
 
 set -euo pipefail
 
-WORKSPACE="\$HOME/.openclaw/workspace"
 TODAY=$(date +%Y-%m-%d)
 SSH_USER="tgds"
 

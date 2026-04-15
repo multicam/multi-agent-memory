@@ -105,6 +105,8 @@ async function getConfig(event: HookEvent) {
     apiUrl:
       hookEnv?.MEMORY_API_URL ||
       process.env.MEMORY_API_URL ||
+      // Intentional homelab fallback: vm-services running the memory MCP
+      // server. Override via MEMORY_API_URL when deploying elsewhere.
       "http://192.168.10.24:8888/mcp",
     agentId: hookEnv?.AGENT_ID || process.env.AGENT_ID || "unknown",
   };

@@ -1,7 +1,7 @@
 [project]
 name = "multi-agent-memory"
 version = "0.1.0"
-description = "Add your description here"
+description = "Shared memory MCP server for multi-agent systems — JSONL truth, pgvector + BM25 hybrid recall."
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.95.0",
@@ -38,7 +38,7 @@ omit = ["src/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 0
+fail_under = 70
 exclude_lines = [
     "pragma: no cover",
     "if __name__",

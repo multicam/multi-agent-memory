@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from collections.abc import Sequence
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 
-def _format_row(row: dict, extra_fields: tuple[str, ...] = ()) -> dict:
+def _format_row(row: dict, extra_fields: Sequence[str] = ()) -> dict:
     """Format a DB row into a memory dict with standard + extra fields."""
     result = {
         "id": str(row["id"]),
