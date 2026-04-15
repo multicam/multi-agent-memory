@@ -29,8 +29,11 @@ addopts = [
     "-v",
     "--strict-markers",
     "--tb=short",
-    "--junitxml=.test-current.xml",
 ]
+# Note: --junitxml is NOT in addopts. A partial test run (pytest -k foo) would
+# otherwise overwrite .test-current.xml and make scripts/backtest.py report
+# every other test as "removed". The backtest script drives its own junit-
+# capturing pytest invocation.
 
 [tool.coverage.run]
 source = ["src"]

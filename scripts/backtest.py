@@ -12,6 +12,7 @@ Exit codes:
 
 import argparse
 import shutil
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -21,6 +22,19 @@ BASELINE = ROOT / ".test-baseline.xml"
 CURRENT = ROOT / ".test-current.xml"
 COV_BASELINE = ROOT / ".coverage-baseline"
 COV_CURRENT = ROOT / ".coverage-current"
+
+
+def run_full_pytest() -> int:
+    """Run the full test suite with JUnit XML capture.
+
+    Backtest owns the junit file rather than letting pyproject.toml addopts
+    emit one on every `pytest` invocation — a partial run (e.g.
+    `pytest -k one_test`) would otherwise overwrite CURRENT with a near-empty
+    file and cause the compare step to flag every other test as "removed".
+    """
+    cmd = ["uv", "run", "pytest", f"--junitxml={CURRENT}"]
+    result = subprocess.run(cmd, cwd=ROOT)
+    return result.returncode
 
 
 def parse_junit(path: Path) -> dict[str, str]:
@@ -78,11 +92,19 @@ def compare(baseline: dict[str, str], current: dict[str, str]) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Test quality gate")
     parser.add_argument("--check", action="store_true", help="Compare only, don't update baseline")
+    parser.add_argument("--no-run", action="store_true", help="Skip pytest; reuse existing .test-current.xml (for CI where pytest ran separately with --junitxml)")
     args = parser.parse_args()
+
+    if not args.no_run:
+        rc = run_full_pytest()
+        if rc != 0 and rc != 1:
+            # rc == 1 = test failures (still want to compare); other codes = infra error
+            print(f"pytest exited with code {rc}; aborting backtest")
+            sys.exit(rc)
 
     if not CURRENT.exists():
         print(f"No current results at {CURRENT}")
-        print("Run: uv run pytest  (JUnit XML is auto-generated via pyproject.toml)")
+        print("Run: uv run python scripts/backtest.py  (invokes pytest internally)")
         sys.exit(1)
 
     current = parse_junit(CURRENT)
