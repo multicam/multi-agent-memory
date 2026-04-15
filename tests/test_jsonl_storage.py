@@ -87,18 +87,23 @@ class TestAppendShared:
 
 
 class TestAppendUnmounted:
-    """specs/jsonl-storage.md — unmounted NAS scenario."""
+    """specs/jsonl-storage.md — unwritable NAS scenario.
+
+    After the 2026-04-15 P2 fix, is_mounted() delegates to is_writable(),
+    so we simulate failure by pointing at a nonexistent path.
+    """
 
     def test_raises_on_unmounted_nas(self, tmp_path):
-        """append() raises OSError when NAS is not mounted."""
-        storage = JSONLStorage(str(tmp_path))
-        # Don't patch is_mounted — tmp_path won't be a real mount point
+        """append() raises OSError when the NAS path is not writable."""
+        missing = tmp_path / "does-not-exist"
+        storage = JSONLStorage(str(missing))
         with pytest.raises(OSError, match="NAS not mounted"):
             storage.append(record={"id": "x"}, agent_id="ag-1", session_id="s")
 
     def test_shared_raises_on_unmounted_nas(self, tmp_path):
-        """append_shared() raises OSError when NAS is not mounted."""
-        storage = JSONLStorage(str(tmp_path))
+        """append_shared() raises OSError when the NAS path is not writable."""
+        missing = tmp_path / "does-not-exist"
+        storage = JSONLStorage(str(missing))
         with pytest.raises(OSError, match="NAS not mounted"):
             storage.append_shared(record={"id": "x"}, session_id="s")
 
@@ -151,11 +156,23 @@ class TestReadAllAgentWithoutEpisodic:
         assert results[0]["id"] == record["id"]
 
 
-class TestIsMounted:
-    """specs/jsonl-storage.md — is_mounted scenario."""
+class TestIsWritable:
+    """specs/jsonl-storage.md — is_writable scenario.
 
-    def test_is_mounted_false_for_tmp_path(self, tmp_path):
-        """tmp_path is not a real mount point."""
+    2026-04-15 P2: we now check writability, not mount semantics. This
+    correctly returns True for mounts, bind mounts, symlinks, and
+    subfolder-dev setups.
+    """
+
+    def test_is_writable_true_for_existing_writable_dir(self, tmp_path):
+        """A writable tmp directory returns True."""
         storage = JSONLStorage(str(tmp_path))
-        # tmp_path is just a directory, not a mount point
+        assert storage.is_writable() is True
+        # is_mounted is a legacy alias that delegates to is_writable
+        assert storage.is_mounted() is True
+
+    def test_is_writable_false_for_missing_path(self, tmp_path):
+        """Nonexistent paths return False."""
+        storage = JSONLStorage(str(tmp_path / "does-not-exist"))
+        assert storage.is_writable() is False
         assert storage.is_mounted() is False

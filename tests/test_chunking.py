@@ -74,6 +74,17 @@ class TestChunkText:
         with pytest.raises(ValueError, match="overlap.*must be < size"):
             server_mod._chunk_text("text", 100, 200)
 
+    def test_text_length_equals_overlap_produces_single_chunk(self):
+        """Text exactly the overlap length produces one chunk, not zero.
+
+        Guards the `and chunks` branch in the drop-trailing-tail check:
+        for the first chunk, `chunks` is empty, so len(chunk) <= overlap
+        must still keep it. 2026-04-15 review P2.
+        """
+        chunks = server_mod._chunk_text("01234", 10, 5)
+        assert len(chunks) == 1
+        assert chunks[0] == "01234"
+
     def test_short_trailing_chunk_dropped(self):
         """Trailing chunks shorter than _CHUNK_MIN are dropped."""
         # 850 chars with size=800, overlap=100: main [0:800], tail [700:850] = 150 chars

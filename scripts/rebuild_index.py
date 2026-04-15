@@ -10,12 +10,27 @@ Uses cached extractions from JSONL (no LLM calls needed).
 import argparse
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+
+import psycopg
 
 from src.config import Config
 from src.embeddings import Embedder
 from src.storage.jsonl import JSONLStorage
 from src.storage.postgres import PGStorage
+
+
+def _parse_iso_tz(s: str) -> datetime:
+    """Parse an ISO-8601 timestamp, tolerating a trailing 'Z' and naive dates.
+
+    Ensures the returned datetime is tz-aware (UTC if the source string had
+    no tz), so inserts into TIMESTAMPTZ columns don't raise in psycopg 3.
+    2026-04-15 review P2.
+    """
+    dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def main():
@@ -51,7 +66,7 @@ def main():
 
     for i, r in enumerate(records):
         try:
-            created_at = datetime.fromisoformat(r["timestamp"])
+            created_at = _parse_iso_tz(r["timestamp"])
 
             # Embed the episodic content
             embedding = None
@@ -101,10 +116,12 @@ def main():
             if (i + 1) % 100 == 0:
                 print(f"  {i + 1}/{len(records)} processed...")
 
+        except psycopg.errors.UniqueViolation:
+            # Expected when re-running against an already-indexed NAS.
+            pass
         except Exception as e:
-            if "duplicate" not in str(e).lower():
-                print(f"  ERROR on {r.get('id', '?')}: {e}")
-                errors += 1
+            print(f"  ERROR on {r.get('id', '?')}: {e}")
+            errors += 1
 
     after = pg.count()
     pg.close()

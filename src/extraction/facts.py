@@ -143,6 +143,10 @@ class FactExtractor:
         -- callers use it to propagate status='parse_error' to the
         Extraction so importance/promotion can treat it like a skip
         instead of silently succeeding with empty facts (2026-04-15 P1 fix).
+
+        Tags are normalised to lowercase + hyphen-separated here so
+        downstream tag-set comparisons (promotion rules) don't need
+        defensive lowercasing. 2026-04-15 review P2.
         """
         raw = raw.strip()
         if raw.startswith("```"):
@@ -151,7 +155,16 @@ class FactExtractor:
                 raw = raw[:-3]
             raw = raw.strip()
         try:
-            return json.loads(raw), True
+            data = json.loads(raw)
         except json.JSONDecodeError:
             log.warning(f"Failed to parse extraction JSON: {raw[:200]}")
             return {}, False
+
+        if isinstance(data, dict) and "tags" in data and isinstance(data["tags"], list):
+            data["tags"] = [_normalize_tag(t) for t in data["tags"] if isinstance(t, str)]
+        return data, True
+
+
+def _normalize_tag(tag: str) -> str:
+    """Normalise a tag: strip, lowercase, collapse underscores/spaces to hyphens."""
+    return tag.strip().lower().replace("_", "-").replace(" ", "-")

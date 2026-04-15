@@ -9,8 +9,20 @@ class JSONLStorage:
     def __init__(self, nas_path: str):
         self._nas_path = Path(nas_path)
 
+    def is_writable(self) -> bool:
+        """True if the NAS path exists and is writable.
+
+        Preferred check — works for real mounts, bind mounts, symlinks,
+        and subfolder-dev setups. 2026-04-15 review P2.
+        """
+        p = self._nas_path
+        return p.exists() and p.is_dir() and os.access(p, os.W_OK)
+
     def is_mounted(self) -> bool:
-        return os.path.ismount(self._nas_path)
+        """Legacy alias for is_writable(). Kept for callers that still
+        check `mount` semantics explicitly; prefer is_writable().
+        """
+        return self.is_writable()
 
     def append(self, record: dict, agent_id: str, session_id: str) -> Path:
         """Append a record to the agent's session JSONL file.
@@ -55,13 +67,16 @@ class JSONLStorage:
 
         return file_path
 
-    def read_all(self) -> list[dict]:
-        """Read all JSONL records across all agents, sorted by timestamp."""
-        records = []
-        agents_dir = self._nas_path / "agents"
+    def read_all_iter(self):
+        """Yield records across all agent JSONL files.
 
+        Unordered — callers that need timestamp ordering should collect via
+        read_all(). 2026-04-15 review P2: avoids materialising all records
+        in memory during a rebuild.
+        """
+        agents_dir = self._nas_path / "agents"
         if not agents_dir.exists():
-            return records
+            return
 
         for agent_dir in sorted(agents_dir.iterdir()):
             episodic_dir = agent_dir / "episodic"
@@ -71,7 +86,10 @@ class JSONLStorage:
                 for line in jsonl_file.read_text(encoding="utf-8").splitlines():
                     line = line.strip()
                     if line:
-                        records.append(json.loads(line))
+                        yield json.loads(line)
 
+    def read_all(self) -> list[dict]:
+        """Read all JSONL records across all agents, sorted by timestamp."""
+        records = list(self.read_all_iter())
         records.sort(key=lambda r: r.get("timestamp", ""))
         return records

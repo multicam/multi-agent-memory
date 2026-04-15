@@ -112,13 +112,15 @@ class TestMain:
 
     def test_calls_pg_connect(self):
         """main() calls pg.connect() to establish the database connection."""
-        with patch.object(server_mod.mcp, "run"):
+        with patch.object(server_mod.mcp, "run"), \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
         _pg().connect.assert_called_once()
 
     def test_calls_embedder_load(self):
         """main() calls embedder.load() to initialise the embedding model."""
-        with patch.object(server_mod.mcp, "run"):
+        with patch.object(server_mod.mcp, "run"), \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
         _embedder().load.assert_called_once()
 
@@ -128,14 +130,16 @@ class TestMain:
         _pg().connect.side_effect = lambda: call_order.append("pg.connect")
         _embedder().load.side_effect = lambda: call_order.append("embedder.load")
 
-        with patch.object(server_mod.mcp, "run"):
+        with patch.object(server_mod.mcp, "run"), \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
 
         assert call_order.index("pg.connect") < call_order.index("embedder.load")
 
     def test_calls_mcp_run_with_streamable_http(self):
         """main() starts the MCP server via mcp.run(transport='streamable-http', ...)."""
-        with patch.object(server_mod.mcp, "run") as mock_run:
+        with patch.object(server_mod.mcp, "run") as mock_run, \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
 
         mock_run.assert_called_once_with(
@@ -146,7 +150,8 @@ class TestMain:
 
     def test_prints_startup_messages(self, capsys):
         """main() prints at least four informational lines before starting the server."""
-        with patch.object(server_mod.mcp, "run"):
+        with patch.object(server_mod.mcp, "run"), \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
 
         captured = capsys.readouterr()
@@ -155,7 +160,8 @@ class TestMain:
 
     def test_print_includes_nas_path(self, capsys):
         """Startup output includes the configured NAS path."""
-        with patch.object(server_mod.mcp, "run"):
+        with patch.object(server_mod.mcp, "run"), \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
 
         captured = capsys.readouterr()
@@ -164,7 +170,8 @@ class TestMain:
     def test_print_includes_embedding_model(self, capsys):
         """Startup output includes the embedding model name."""
         _embedder().model_name = "test-model"
-        with patch.object(server_mod.mcp, "run"):
+        with patch.object(server_mod.mcp, "run"), \
+             patch.object(server_mod, "_check_schema"):
             server_mod.main()
 
         captured = capsys.readouterr()

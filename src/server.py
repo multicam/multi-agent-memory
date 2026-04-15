@@ -3,6 +3,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -341,9 +342,36 @@ def memory_status() -> dict:
     }
 
 
+def _check_schema(pg_storage: PGStorage) -> None:
+    """Fail-loud if migrations/ contains files not recorded in PG.
+
+    2026-04-15 P2: the BM25 GIN index comes from migration 002. Without
+    it, recall_bm25 raises UndefinedColumn which the tool swallows as a
+    warning — users see a degraded response with no clear signal.
+    """
+    migrations_dir = Path(__file__).parent.parent / "migrations"
+    if not migrations_dir.exists():
+        return  # running from an install that doesn't ship the dir
+    expected = {f.name for f in migrations_dir.glob("*.sql")}
+    if not expected:
+        return
+    with pg_storage.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT filename FROM schema_migrations"
+        ).fetchall()
+    applied = {r["filename"] for r in rows}
+    missing = expected - applied
+    if missing:
+        raise RuntimeError(
+            f"Unapplied migrations: {sorted(missing)}. "
+            f"Run: psql ... -f migrations/<file>"
+        )
+
+
 def main():
     _init_state()
     pg.connect()
+    _check_schema(pg)
     embedder.load()
     print(f"Connected to PostgreSQL")
     print(f"NAS path: {config.nas_path} (mounted: {jsonl.is_mounted()})")
