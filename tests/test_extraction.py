@@ -30,37 +30,42 @@ def _make_ollama_response(payload: dict) -> MagicMock:
 def test_parse_json_clean():
     """Clean JSON parses correctly."""
     ext = FactExtractor()
-    result = ext._parse_json('{"facts": ["a"], "entities": [], "tags": [], "shareable": true}')
-    assert result["facts"] == ["a"]
-    assert result["shareable"] is True
+    data, ok = ext._parse_json('{"facts": ["a"], "entities": [], "tags": [], "shareable": true}')
+    assert data["facts"] == ["a"]
+    assert data["shareable"] is True
+    assert ok is True
 
 
 def test_parse_json_with_markdown_fences():
     """JSON wrapped in markdown fences is handled."""
     ext = FactExtractor()
-    result = ext._parse_json('```json\n{"facts": ["b"], "entities": [], "tags": [], "shareable": false}\n```')
-    assert result["facts"] == ["b"]
+    data, ok = ext._parse_json('```json\n{"facts": ["b"], "entities": [], "tags": [], "shareable": false}\n```')
+    assert data["facts"] == ["b"]
+    assert ok is True
 
 
 def test_parse_json_with_fences_no_lang():
     """JSON wrapped in bare fences (no language tag) is handled."""
     ext = FactExtractor()
-    result = ext._parse_json('```\n{"facts": [], "entities": [], "tags": ["test"], "shareable": false}\n```')
-    assert result["tags"] == ["test"]
+    data, ok = ext._parse_json('```\n{"facts": [], "entities": [], "tags": ["test"], "shareable": false}\n```')
+    assert data["tags"] == ["test"]
+    assert ok is True
 
 
 def test_parse_json_invalid():
-    """Invalid JSON returns empty dict."""
+    """Invalid JSON returns empty dict and parse_ok=False."""
     ext = FactExtractor()
-    result = ext._parse_json("not json at all")
-    assert result == {}
+    data, ok = ext._parse_json("not json at all")
+    assert data == {}
+    assert ok is False
 
 
 def test_parse_json_empty():
-    """Empty string returns empty dict."""
+    """Empty string returns empty dict and parse_ok=False."""
     ext = FactExtractor()
-    result = ext._parse_json("")
-    assert result == {}
+    data, ok = ext._parse_json("")
+    assert data == {}
+    assert ok is False
 
 
 def test_extraction_dataclass_to_dict():
@@ -256,6 +261,36 @@ class TestExtractHaiku:
         assert result.facts == []
         assert result.decisions == []
         assert result.shareable is False
+
+    def test_unparseable_response_sets_parse_error_status(self):
+        """2026-04-15 P1: JSON parse failure surfaces as status='parse_error', not 'success'."""
+        with patch("src.extraction.facts.anthropic.Anthropic") as mock_cls:
+            mock_cls.return_value.messages.create.return_value = (
+                _make_anthropic_response("not json at all")
+            )
+            ext = FactExtractor(api_key="sk-test")
+            result = ext._extract_haiku("text", self._NOW)
+
+        assert result.status == "parse_error"
+        assert result.facts == []
+
+    def test_embed_batch_used_for_facts_or_chunks(self):
+        """Regression stub: embed_batch is a supported batch API."""
+        # Isolated from server; just ensures Embedder.embed_batch exists + usable.
+        from src.embeddings import Embedder
+        from unittest.mock import MagicMock
+
+        e = Embedder()
+        mock_model = MagicMock()
+        mock_vec1, mock_vec2 = MagicMock(), MagicMock()
+        mock_vec1.tolist.return_value = [0.1] * 768
+        mock_vec2.tolist.return_value = [0.2] * 768
+        mock_model.encode.return_value = [mock_vec1, mock_vec2]
+        e._model = mock_model
+
+        out = e.embed_batch(["a", "b"])
+        assert len(out) == 2
+        mock_model.encode.assert_called_once_with(["a", "b"], normalize_embeddings=True)
 
 
 # ---------------------------------------------------------------------------

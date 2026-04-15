@@ -330,6 +330,13 @@ class PGStorage:
 
         Uses a CTE to bind the query vector once, then ORDER BY + LIMIT 1
         to leverage the HNSW index (not WHERE on computed similarity).
+
+        The threshold is applied in Python on the returned row, not in SQL.
+        Adding `WHERE 1 - (embedding <=> qv.vec) > threshold` would prevent
+        the planner from using HNSW for that predicate — the Python-side
+        filter is cheaper than losing index acceleration. The arithmetic
+        `1 - cosine_distance ∈ [0, 2]` relies on embeddings being
+        normalized (Embedder sets normalize_embeddings=True).
         """
         qe = str(embedding)
         with self._get_conn() as conn:

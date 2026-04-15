@@ -29,6 +29,16 @@ JSON only, no markdown fences:"""
 
 @dataclass
 class Extraction:
+    """Structured knowledge extracted from a memory.
+
+    status transitions:
+        "success"      — backend returned well-formed JSON
+        "fallback"     — primary backend failed, fallback (Ollama) used
+        "parse_error"  — backend responded but JSON failed to parse;
+                         callers should treat the same as "skipped" for
+                         importance scoring and promotion
+        "skipped"      — no backend available or all failed
+    """
     facts: list[str] = field(default_factory=list)
     decisions: list[str] = field(default_factory=list)
     entities: list[dict] = field(default_factory=list)
@@ -89,7 +99,7 @@ class FactExtractor:
         )
 
         raw = response.content[0].text.strip()
-        data = self._parse_json(raw)
+        data, parse_ok = self._parse_json(raw)
 
         return Extraction(
             facts=data.get("facts", []),
@@ -99,7 +109,7 @@ class FactExtractor:
             shareable=data.get("shareable", False),
             model="claude-haiku-4-5-20251001",
             extracted_at=now,
-            status="success",
+            status="success" if parse_ok else "parse_error",
         )
 
     def _extract_ollama(self, text: str, now: str) -> Extraction:
@@ -113,7 +123,7 @@ class FactExtractor:
         )
         response.raise_for_status()
         raw = response.json()["response"].strip()
-        data = self._parse_json(raw)
+        data, parse_ok = self._parse_json(raw)
 
         return Extraction(
             facts=data.get("facts", []),
@@ -123,11 +133,17 @@ class FactExtractor:
             shareable=data.get("shareable", False),
             model="ollama/llama3",
             extracted_at=now,
-            status="fallback",
+            status="fallback" if parse_ok else "parse_error",
         )
 
-    def _parse_json(self, raw: str) -> dict:
-        """Parse JSON, stripping markdown fences if present."""
+    def _parse_json(self, raw: str) -> tuple[dict, bool]:
+        """Parse JSON, stripping markdown fences if present.
+
+        Returns (data, parse_ok). parse_ok is False when json.loads raises
+        -- callers use it to propagate status='parse_error' to the
+        Extraction so importance/promotion can treat it like a skip
+        instead of silently succeeding with empty facts (2026-04-15 P1 fix).
+        """
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -135,7 +151,7 @@ class FactExtractor:
                 raw = raw[:-3]
             raw = raw.strip()
         try:
-            return json.loads(raw)
+            return json.loads(raw), True
         except json.JSONDecodeError:
             log.warning(f"Failed to parse extraction JSON: {raw[:200]}")
-            return {}
+            return {}, False
