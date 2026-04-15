@@ -3,11 +3,6 @@
 Covers the recall() MCP tool: semantic + BM25 channels, RRF merge, fallbacks.
 """
 
-import os
-
-# Must be set before server.py is imported (module-level Config.from_env())
-os.environ.setdefault("PG_URL", "postgresql://test:test@localhost/test")
-
 import pytest
 from unittest.mock import MagicMock, patch
 

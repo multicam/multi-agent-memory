@@ -1,11 +1,11 @@
 """Shared fixtures and automatic marker assignment for the test suite."""
 
-import os
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-os.environ.setdefault("PG_URL", "postgresql://mock:mock@localhost/test")
+# NOTE: src.server no longer reads env at import time (2026-04-15 P0 fix).
+# Tests that need PG_URL set must do so explicitly via monkeypatch.setenv.
 
 from tests.helpers import make_extraction
 

@@ -40,14 +40,54 @@ def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
         start = end - overlap
     return chunks
 
-config = Config.from_env()
-pg = PGStorage(config.pg_url)
-jsonl = JSONLStorage(config.nas_path)
-embedder = Embedder()
-extractor = FactExtractor(
-    api_key=config.anthropic_api_key,
-    ollama_base_url=config.ollama_base_url,
-)
+# Lazy-initialised module globals. Populated by _init_state() (called by main()
+# or lazily by each tool). Import-time has zero env reads and no object
+# construction -- the single most load-bearing requirement fixed in the
+# 2026-04-15 review (P0: module-level side effects).
+config: Config | None = None
+pg: PGStorage | None = None
+jsonl: JSONLStorage | None = None
+embedder: Embedder | None = None
+extractor: FactExtractor | None = None
+
+
+def _init_state(need_jsonl: bool = True, need_extractor: bool = True) -> None:
+    """Populate module globals from env. Idempotent.
+
+    Only initialises globals that are still None *and* requested by the
+    caller (per-tool flags). Tests that monkeypatch individual globals
+    with mocks aren't forced to supply env vars for the ones they don't
+    touch. This is both the lazy-init entrypoint (via _ensure_ready) and
+    the explicit startup hook (called by main()).
+    """
+    global config, pg, jsonl, embedder, extractor
+    # Early exit: nothing missing that the caller wants -- keeps import-time
+    # and per-call costs at zero when mocks are already installed.
+    if (
+        pg is not None
+        and embedder is not None
+        and (not need_jsonl or jsonl is not None)
+        and (not need_extractor or extractor is not None)
+    ):
+        return
+    if config is None:
+        config = Config.from_env()
+    if pg is None:
+        pg = PGStorage(config.pg_url)
+    if need_jsonl and jsonl is None:
+        jsonl = JSONLStorage(config.nas_path)
+    if embedder is None:
+        embedder = Embedder()
+    if need_extractor and extractor is None:
+        extractor = FactExtractor(
+            api_key=config.anthropic_api_key,
+            ollama_base_url=config.ollama_base_url,
+        )
+
+
+# Alias -- kept for readability at the tool call sites.
+_ensure_ready = _init_state
+
 
 mcp = FastMCP(
     "multi-agent-memory",
@@ -72,6 +112,7 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
     if not agent_id.strip():
         return {"error": "agent_id is required"}
 
+    _ensure_ready()
     memory_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
@@ -227,6 +268,7 @@ def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
     if not agent_id.strip():
         return [{"error": "agent_id is required"}]
 
+    _ensure_ready(need_jsonl=False, need_extractor=False)
     semantic_results = []
     bm25_results = []
 
@@ -276,6 +318,7 @@ def wake_up(agent_id: str) -> dict:
     if not agent_id.strip():
         return {"error": "agent_id is required"}
 
+    _ensure_ready(need_jsonl=False, need_extractor=False)
     layer_1: list[dict] = []
     layer_2: list[dict] = []
 
@@ -303,6 +346,7 @@ def memory_status() -> dict:
     Returns:
         Status of PostgreSQL connection, NAS mount, and embedding model.
     """
+    _ensure_ready()
     return {
         "pg": "connected" if pg.is_connected() else "disconnected",
         "nas": "mounted" if jsonl.is_mounted() else "unmounted",
@@ -313,6 +357,7 @@ def memory_status() -> dict:
 
 
 def main():
+    _init_state()
     pg.connect()
     embedder.load()
     print(f"Connected to PostgreSQL")
