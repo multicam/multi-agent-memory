@@ -121,10 +121,18 @@ def test_extract_without_api_keys_returns_skipped():
 @pytest.mark.unit
 class TestFactExtractorInit:
     def test_api_key_creates_anthropic_client(self):
-        """Providing an api_key instantiates an anthropic.Anthropic client."""
+        """Providing an api_key instantiates an anthropic.Anthropic client with timeout + retry kwargs.
+
+        The timeout/max_retries kwargs guard against stuck API calls blocking
+        the MCP tool indefinitely. Values tracked here as the contract.
+        """
         with patch("src.extraction.facts.anthropic.Anthropic") as mock_cls:
             ext = FactExtractor(api_key="sk-test-key")
-            mock_cls.assert_called_once_with(api_key="sk-test-key")
+            mock_cls.assert_called_once_with(
+                api_key="sk-test-key",
+                timeout=30.0,
+                max_retries=2,
+            )
             assert ext._client is mock_cls.return_value
 
     def test_no_api_key_leaves_client_none(self):

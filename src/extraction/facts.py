@@ -66,7 +66,11 @@ class FactExtractor:
         self._client: anthropic.Anthropic | None = None
         self._ollama_base_url = ollama_base_url
         if api_key:
-            self._client = anthropic.Anthropic(api_key=api_key)
+            self._client = anthropic.Anthropic(
+                api_key=api_key,
+                timeout=30.0,
+                max_retries=2,
+            )
 
     def extract(self, text: str) -> Extraction:
         """Extract facts from text. Tries Haiku first, falls back to Ollama."""
