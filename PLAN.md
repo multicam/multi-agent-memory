@@ -19,7 +19,7 @@ _Tracer bullet — thinnest possible end-to-end proof._
   - `listen_addresses = '*'`
 - [x] Schema migration `001_initial.sql`
   - `memories` table with vector(768), shared namespace columns, provenance JSONB
-  - `shared_events` table (append-only inter-agent coordination)
+  - `shared_events` table (append-only inter-agent coordination) — dropped in `003_drop_shared_events.sql` (unused)
   - `schema_migrations` table (idempotent apply)
   - Indexes: agent+time, HNSW on embedding, GIN on tags, partial on shared
 - [x] Python project scaffold
