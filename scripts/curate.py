@@ -41,6 +41,14 @@ def main():
     pg = PGStorage(config.pg_url)
     pg.connect()
 
+    try:
+        _run_curation(config, pg, args)
+    finally:
+        pg.close()
+
+
+def _run_curation(config, pg, args):
+    """Main curation logic — called inside try/finally to guarantee pg.close()."""
     # Fetch recent private memories
     with pg.get_conn() as conn:
         rows = conn.execute(
@@ -57,7 +65,6 @@ def main():
 
     if not rows:
         print("No private memories to review")
-        pg.close()
         return
 
     reviewed_ids = {str(r["id"]) for r in rows}
@@ -84,12 +91,10 @@ def main():
         promote_ids = json.loads(raw)
     except json.JSONDecodeError:
         print(f"Failed to parse LLM response: {raw[:200]}")
-        pg.close()
         return
 
     if not isinstance(promote_ids, list) or not all(isinstance(x, str) for x in promote_ids):
         print(f"LLM returned invalid format (expected list of strings): {raw[:200]}")
-        pg.close()
         return
 
     # Validate: only promote IDs that were actually in the reviewed batch
@@ -100,7 +105,6 @@ def main():
 
     if not valid_ids:
         print("No memories recommended for promotion")
-        pg.close()
         return
 
     print(f"LLM recommends promoting {len(valid_ids)} memories")
@@ -111,7 +115,6 @@ def main():
             if matching:
                 print(f"  {pid}: {matching[0]['content'][:100]}")
         print("Dry run — no changes made")
-        pg.close()
         return
 
     # Promote with per-record transactions (Diderot pattern: PG commit only after JSONL succeeds)
@@ -154,8 +157,6 @@ def main():
             except OSError as e:
                 print(f"  WARNING: JSONL write failed for {pid}, PG rolled back: {e}")
                 skipped_jsonl += 1
-
-    pg.close()
 
     print(f"Promoted:      {promoted}")
     print(f"JSONL skipped: {skipped_jsonl}")
