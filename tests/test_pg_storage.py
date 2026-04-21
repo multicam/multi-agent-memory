@@ -192,7 +192,14 @@ class TestStore:
             embedding=embedding,
         )
         _, params = pg._conn.execute.call_args[0]
-        assert str(embedding) in params
+        assert "[0.1,0.2,0.3]" in params
+
+    def test_store_embedding_helper_handles_floats(self, pg):
+        """Embedding conversion uses explicit float() cast, not Python repr."""
+        from src.storage.postgres import _embedding_to_str
+        assert _embedding_to_str(None) is None
+        assert _embedding_to_str([0.1, 0.2]) == "[0.1,0.2]"
+        assert _embedding_to_str([1, 2, 3]) == "[1.0,2.0,3.0]"
 
     def test_store_none_embedding_passes_none(self, pg):
         """store() passes None when no embedding provided."""
@@ -303,8 +310,9 @@ class TestStoreFacts:
         embs = [[0.1, 0.2], [0.3, 0.4]]
         _store_facts(pg, ["f1", "f2"], embeddings=embs)
         calls = pg._conn.execute.call_args_list
-        assert str(embs[0]) in calls[0][0][1]
-        assert str(embs[1]) in calls[1][0][1]
+        from src.storage.postgres import _embedding_to_str
+        assert _embedding_to_str(embs[0]) in calls[0][0][1]
+        assert _embedding_to_str(embs[1]) in calls[1][0][1]
 
     def test_store_facts_empty_list_returns_empty(self, pg):
         """store_facts() with empty facts returns [] without DB calls."""

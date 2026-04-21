@@ -11,6 +11,17 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 
+def _embedding_to_str(emb: list[float] | None) -> str | None:
+    """Convert an embedding list to a pgvector-parseable string.
+
+    Uses explicit float() cast on each element instead of relying on
+    Python's list repr, which would break for numpy scalar types.
+    """
+    if emb is None:
+        return None
+    return "[" + ",".join(str(float(v)) for v in emb) + "]"
+
+
 def _format_row(row: dict, extra_fields: Sequence[str] = ()) -> dict:
     """Format a DB row into a memory dict with standard + extra fields."""
     result = {
@@ -96,7 +107,7 @@ class PGStorage:
         tags: list[str] | None = None,
     ) -> None:
         """Insert a memory row. Raises on failure."""
-        emb_str = str(embedding) if embedding else None
+        emb_str = _embedding_to_str(embedding)
         prov_json = json.dumps(provenance) if provenance else None
         shared_by = agent_id if shared else None
 
@@ -140,7 +151,7 @@ class PGStorage:
         def _insert_all(c):
             for i, fact in enumerate(facts):
                 fact_id = str(uuid.uuid4())
-                emb_str = str(embeddings[i]) if embeddings and i < len(embeddings) else None
+                emb_str = _embedding_to_str(embeddings[i]) if embeddings and i < len(embeddings) else None
 
                 # Per-row provenance: merge subtype into the provided provenance dict.
                 per_prov = dict(provenance or {})
@@ -194,7 +205,7 @@ class PGStorage:
         provenance={parent_memory_id, chunk: True}; semantic rows carry
         provenance.subtype='fact' or 'decision' for structural filtering.
         """
-        emb_str = str(embedding) if embedding else None
+        emb_str = _embedding_to_str(embedding)
         prov_json = json.dumps(provenance) if provenance else None
         shared_by = agent_id if shared else None
 
@@ -258,7 +269,7 @@ class PGStorage:
         threshold: float = 0.3,
     ) -> list[dict]:
         """Recall memories by cosine similarity. Searches agent's own + shared memories."""
-        qe = str(query_embedding)
+        qe = _embedding_to_str(query_embedding)
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
@@ -339,7 +350,7 @@ class PGStorage:
         `1 - cosine_distance ∈ [0, 2]` relies on embeddings being
         normalized (Embedder sets normalize_embeddings=True).
         """
-        qe = str(embedding)
+        qe = _embedding_to_str(embedding)
         with self._get_conn() as conn:
             row = conn.execute(
                 """WITH qv AS (SELECT %s::vector AS vec)
