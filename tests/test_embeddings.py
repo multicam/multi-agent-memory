@@ -15,6 +15,7 @@ class TestEmbedderLoad:
     def test_load_creates_sentence_transformer(self):
         """load() instantiates a SentenceTransformer with trust_remote_code=True."""
         with patch("src.embeddings.SentenceTransformer") as mock_cls:
+            mock_cls.return_value.get_sentence_embedding_dimension.return_value = 768
             embedder = Embedder()
             embedder.load()
 
@@ -24,10 +25,21 @@ class TestEmbedderLoad:
     def test_load_uses_custom_model_name(self):
         """load() passes the model_name given at construction to SentenceTransformer."""
         with patch("src.embeddings.SentenceTransformer") as mock_cls:
+            mock_cls.return_value.get_sentence_embedding_dimension.return_value = 768
             embedder = Embedder(model_name="custom/model")
             embedder.load()
 
             mock_cls.assert_called_once_with("custom/model", trust_remote_code=True)
+
+    def test_load_warns_on_dimension_mismatch(self, caplog):
+        """load() warns if model reports a different dimension than DIMENSIONS."""
+        import logging
+        with patch("src.embeddings.SentenceTransformer") as mock_cls:
+            mock_cls.return_value.get_sentence_embedding_dimension.return_value = 512
+            embedder = Embedder()
+            with caplog.at_level(logging.WARNING, logger="agent-memory"):
+                embedder.load()
+            assert "512" in caplog.text and "768" in caplog.text
 
 
 # ---------------------------------------------------------------------------

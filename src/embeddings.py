@@ -20,6 +20,12 @@ class Embedder:
     def load(self) -> None:
         log.info("Loading embedding model: %s", self._model_name)
         self._model = SentenceTransformer(self._model_name, trust_remote_code=True)
+        actual = self._model.get_sentence_embedding_dimension()
+        if actual != DIMENSIONS:
+            log.warning(
+                "Model reports %d-dim, expected %d — vector column size may not match",
+                actual, DIMENSIONS,
+            )
         log.info("Embedding model loaded (%d-dim)", DIMENSIONS)
 
     def embed(self, text: str) -> list[float]:
