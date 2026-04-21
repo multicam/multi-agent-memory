@@ -164,6 +164,10 @@ class FactExtractor:
             log.warning(f"Failed to parse extraction JSON: {raw[:200]}")
             return {}, False
 
+        if not isinstance(data, dict):
+            log.warning(f"Extraction JSON was {type(data).__name__}, expected dict")
+            return {}, False
+
         if isinstance(data, dict) and "tags" in data and isinstance(data["tags"], list):
             data["tags"] = [_normalize_tag(t) for t in data["tags"] if isinstance(t, str)]
         if isinstance(data, dict) and "shareable" in data:

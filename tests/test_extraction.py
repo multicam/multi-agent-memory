@@ -68,6 +68,22 @@ def test_parse_json_empty():
     assert ok is False
 
 
+def test_parse_json_array_returns_empty():
+    """JSON array (not object) returns empty dict and parse_ok=False."""
+    ext = FactExtractor()
+    data, ok = ext._parse_json('[1, 2, 3]')
+    assert data == {}
+    assert ok is False
+
+
+def test_parse_json_null_returns_empty():
+    """JSON null returns empty dict and parse_ok=False."""
+    ext = FactExtractor()
+    data, ok = ext._parse_json('null')
+    assert data == {}
+    assert ok is False
+
+
 def test_parse_json_shareable_string_true_coerced():
     """shareable='true' (string) is coerced to True."""
     ext = FactExtractor()
