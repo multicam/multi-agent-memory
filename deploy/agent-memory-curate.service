@@ -9,5 +9,6 @@ WorkingDirectory=/opt/multi-agent-memory
 EnvironmentFile=/opt/multi-agent-memory/.env
 Environment=PYTHONPATH=/opt/multi-agent-memory
 ExecStart=/opt/multi-agent-memory/.venv/bin/python scripts/curate.py --limit 50
+TimeoutStartSec=300
 StandardOutput=journal
 StandardError=journal
