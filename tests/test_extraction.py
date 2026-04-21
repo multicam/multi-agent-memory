@@ -68,6 +68,31 @@ def test_parse_json_empty():
     assert ok is False
 
 
+def test_parse_json_shareable_string_true_coerced():
+    """shareable='true' (string) is coerced to True."""
+    ext = FactExtractor()
+    data, ok = ext._parse_json('{"shareable": "true", "facts": [], "tags": []}')
+    assert ok is True
+    assert data["shareable"] is True
+
+
+def test_parse_json_shareable_string_false_coerced():
+    """shareable='false' (string) is coerced to False, not truthy."""
+    ext = FactExtractor()
+    data, ok = ext._parse_json('{"shareable": "false", "facts": [], "tags": []}')
+    assert ok is True
+    assert data["shareable"] is False
+
+
+def test_parse_json_shareable_int_coerced():
+    """shareable=1 and shareable=0 are coerced to proper bools."""
+    ext = FactExtractor()
+    data1, _ = ext._parse_json('{"shareable": 1, "facts": [], "tags": []}')
+    data0, _ = ext._parse_json('{"shareable": 0, "facts": [], "tags": []}')
+    assert data1["shareable"] is True
+    assert data0["shareable"] is False
+
+
 def test_extraction_dataclass_to_dict():
     """Extraction.to_dict() returns all fields including decisions."""
     e = Extraction(

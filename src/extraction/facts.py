@@ -166,6 +166,15 @@ class FactExtractor:
 
         if isinstance(data, dict) and "tags" in data and isinstance(data["tags"], list):
             data["tags"] = [_normalize_tag(t) for t in data["tags"] if isinstance(t, str)]
+        if isinstance(data, dict) and "shareable" in data:
+            val = data["shareable"]
+            if isinstance(val, bool):
+                pass  # already correct
+            elif isinstance(val, (int, float)):
+                data["shareable"] = bool(val)
+            else:
+                # String or other — coerce: only "true"/"1"/non-empty-truthy
+                data["shareable"] = str(val).lower() == "true"
         return data, True
 
 
