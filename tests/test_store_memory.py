@@ -61,6 +61,23 @@ class TestStoreMemoryValidation:
         assert "error" in result
         assert "agent_id" in result["error"]
 
+    def test_empty_session_id_rejected(self):
+        """Empty session_id returns error dict."""
+        result = server_mod.store_memory("some text", "ag-1", "")
+        assert "error" in result
+        assert "session_id" in result["error"]
+
+    def test_path_traversal_session_id_rejected(self):
+        """session_id with path separators is rejected."""
+        result = server_mod.store_memory("some text", "ag-1", "../etc/passwd")
+        assert "error" in result
+        assert "invalid" in result["error"].lower()
+
+    def test_slash_in_session_id_rejected(self):
+        """session_id with forward slash is rejected."""
+        result = server_mod.store_memory("some text", "ag-1", "foo/bar")
+        assert "error" in result
+
 
 @pytest.mark.integration
 class TestStoreMemoryHappyPath:

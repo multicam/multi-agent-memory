@@ -113,6 +113,10 @@ def store_memory(text: str, agent_id: str, session_id: str) -> dict:
         return {"error": "text cannot be empty"}
     if not agent_id.strip():
         return {"error": "agent_id is required"}
+    if not session_id.strip():
+        return {"error": "session_id is required"}
+    if "/" in session_id or "\\" in session_id or ".." in session_id:
+        return {"error": "session_id contains invalid characters"}
 
     _ensure_ready()
     memory_id = str(uuid.uuid4())
