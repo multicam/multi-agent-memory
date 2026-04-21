@@ -64,7 +64,7 @@ def main():
 
     # Read all PG episodic IDs + semantic counts per parent
     pg.connect()
-    with pg._get_conn() as conn:
+    with pg.get_conn() as conn:
         rows = conn.execute(
             "SELECT id, shared FROM memories WHERE memory_type = 'episodic'"
         ).fetchall()
