@@ -130,6 +130,31 @@ class TestReadAll:
         assert storage.read_all() == []
 
 
+class TestReadAllIterStreams:
+    """read_all_iter() should stream lines, not materialize entire files."""
+
+    def test_yields_records_without_reading_entire_file(self, nas, tmp_path):
+        """read_all_iter yields individual records from a multi-line JSONL."""
+        for i in range(5):
+            nas.append(
+                record={"id": str(i), "timestamp": f"2026-03-24T1{i}:00:00", "content": f"rec {i}"},
+                agent_id="ag-1",
+                session_id="s1",
+            )
+
+        results = list(nas.read_all_iter())
+        assert len(results) == 5
+        assert {r["id"] for r in results} == {"0", "1", "2", "3", "4"}
+
+    def test_handles_multi_agent_dirs(self, nas, tmp_path):
+        """read_all_iter yields from all agent directories."""
+        nas.append(record={"id": "a1", "timestamp": "2026-03-24T10:00:00"}, agent_id="ag-1", session_id="s1")
+        nas.append(record={"id": "a2", "timestamp": "2026-03-24T11:00:00"}, agent_id="ag-2", session_id="s1")
+
+        results = list(nas.read_all_iter())
+        assert len(results) == 2
+
+
 class TestReadAllAgentWithoutEpisodic:
     """read_all() skips agent dirs that have no episodic/ subdirectory (line 69)."""
 

@@ -83,10 +83,11 @@ class JSONLStorage:
             if not episodic_dir.exists():
                 continue
             for jsonl_file in sorted(episodic_dir.glob("*.jsonl")):
-                for line in jsonl_file.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if line:
-                        yield json.loads(line)
+                with jsonl_file.open(encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            yield json.loads(line)
 
     def read_all(self) -> list[dict]:
         """Read all JSONL records across all agents, sorted by timestamp."""
