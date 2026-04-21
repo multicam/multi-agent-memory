@@ -138,6 +138,31 @@ class TestInitStateLazyPaths:
             MockEmbedder.assert_called_once()
             MockExtractor.assert_called_once()
 
+    def test_init_state_calls_embedder_load(self, monkeypatch):
+        """_init_state calls embedder.load() so the model is ready for tool calls."""
+        monkeypatch.setattr(server_mod, "config", None)
+        monkeypatch.setattr(server_mod, "pg", None)
+        monkeypatch.setattr(server_mod, "jsonl", None)
+        monkeypatch.setattr(server_mod, "embedder", None)
+        monkeypatch.setattr(server_mod, "extractor", None)
+
+        fake_config = MagicMock()
+        fake_config.pg_url = "postgresql://x"
+        fake_config.nas_path = "/tmp/nas"
+        fake_config.anthropic_api_key = None
+        fake_config.ollama_base_url = None
+
+        with patch("src.server.Config") as MockConfig, \
+             patch("src.server.PGStorage"), \
+             patch("src.server.JSONLStorage"), \
+             patch("src.server.Embedder") as MockEmbedder, \
+             patch("src.server.FactExtractor"):
+            MockConfig.from_env.return_value = fake_config
+
+            server_mod._init_state(need_jsonl=True, need_extractor=True)
+
+            MockEmbedder.return_value.load.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # src/server.py:177-178  — embed_batch failure is non-fatal

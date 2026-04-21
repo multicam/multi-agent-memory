@@ -79,6 +79,7 @@ def _init_state(need_jsonl: bool = True, need_extractor: bool = True) -> None:
         jsonl = JSONLStorage(config.nas_path)
     if embedder is None:
         embedder = Embedder()
+        embedder.load()
     if need_extractor and extractor is None:
         extractor = FactExtractor(
             api_key=config.anthropic_api_key,
