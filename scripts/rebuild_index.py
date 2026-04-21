@@ -12,8 +12,6 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
-import psycopg
-
 from src.config import Config
 from src.embeddings import Embedder
 from src.storage.jsonl import JSONLStorage
@@ -83,8 +81,17 @@ def main():
                     "extracted_at": extraction.get("extracted_at", ""),
                 }
 
-            # Store episodic memory (restore shared flag from JSONL)
-            pg.store(
+            # Single atomic write: episodic + facts + decisions in one transaction.
+            # Mirrors server.py's store_memory path — avoids partial state where
+            # episodic commits but semantic children fail (2026-04-21 P1 fix).
+            facts = extraction.get("facts", []) if extraction else []
+            decisions = extraction.get("decisions", []) if extraction else []
+            all_semantic = facts + decisions
+            sem_embeddings = None
+            if embedder and all_semantic:
+                sem_embeddings = [embedder.embed(s) for s in all_semantic]
+
+            pg.store_with_facts_and_chunks(
                 memory_id=r["id"],
                 text=r["content"],
                 agent_id=r["agent_id"],
@@ -94,31 +101,14 @@ def main():
                 embedding=embedding,
                 provenance=provenance,
                 shared=r.get("promoted", False),
+                facts=facts or None,
+                decisions=decisions or None,
+                fact_embeddings=sem_embeddings,
             )
-
-            # Store extracted facts AND decisions as semantic rows (mirrors server.py)
-            all_semantic = extraction.get("facts", []) + extraction.get("decisions", [])
-            if all_semantic:
-                sem_embeddings = None
-                if embedder:
-                    sem_embeddings = [embedder.embed(s) for s in all_semantic]
-
-                pg.store_facts(
-                    facts=all_semantic,
-                    agent_id=r["agent_id"],
-                    session_id=r.get("session_id", "unknown"),
-                    source_memory_id=r["id"],
-                    created_at=created_at,
-                    embeddings=sem_embeddings,
-                    provenance=provenance,
-                )
 
             if (i + 1) % 100 == 0:
                 print(f"  {i + 1}/{len(records)} processed...")
 
-        except psycopg.errors.UniqueViolation:
-            # Expected when re-running against an already-indexed NAS.
-            pass
         except Exception as e:
             print(f"  ERROR on {r.get('id', '?')}: {e}")
             errors += 1
