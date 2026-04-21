@@ -286,7 +286,11 @@ def recall(query: str, agent_id: str, limit: int = 10) -> list[dict]:
 
     # Last resort: recency fallback
     log.warning("Both semantic and BM25 recall failed, falling back to recency")
-    return pg.recall(query=query, agent_id=agent_id, limit=limit)
+    try:
+        return pg.recall(query=query, agent_id=agent_id, limit=limit)
+    except Exception as e:
+        log.warning(f"Recency fallback also failed: {e}")
+        return []
 
 
 @mcp.tool()

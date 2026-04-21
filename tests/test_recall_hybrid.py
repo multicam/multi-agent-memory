@@ -115,6 +115,19 @@ class TestRecallHybrid:
         assert len(results) == 1
         assert results[0]["id"] == "fallback"
 
+    def test_all_three_channels_fail_returns_empty_list(self, mock_deps):
+        """When semantic, BM25, and recency all fail, return [] not an exception."""
+        from src.server import recall
+        mock_embedder, mock_pg = mock_deps
+
+        mock_embedder.embed.side_effect = RuntimeError("embed fail")
+        mock_pg.recall_bm25.side_effect = RuntimeError("bm25 fail")
+        mock_pg.recall.side_effect = RuntimeError("pg down")
+
+        results = recall("test", "ag-1", limit=5)
+
+        assert results == []
+
     def test_empty_agent_id_returns_error(self, mock_deps):
         from src.server import recall
 
