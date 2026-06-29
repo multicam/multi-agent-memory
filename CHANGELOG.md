@@ -4,6 +4,19 @@ All notable changes to the multi-agent-memory MCP server.
 
 ## Unreleased (on `deps/bump-2026-04`)
 
+### Ops
+- **PG password drift fixed + guarded.** vm-services `.env` `memory_user`
+  password had drifted from the workstation PG (since 2026-04-17), silently
+  killing the whole pipeline — the `psycopg_pool` masked the auth failure as a
+  30s `PoolTimeout`, so the MCP server crash-looped while reporting
+  `systemctl is-active`. 74 days of zero writes. Added
+  `deploy/sync-pg-password.sh` (workstation-run): makes the local repo `.env`
+  the single source of truth, verifies the password against PG, then surgically
+  rewrites *only* the `PG_URL` password on vm-services (preserving
+  `ANTHROPIC_API_KEY`/`HF_TOKEN`/host), restarts, and polls `:8888` until 200.
+  `deploy/deploy.sh` now fails loudly with a `psycopg.connect()` preflight
+  instead of letting the service crash-loop on a drifted password.
+
 ### Fixed
 - **P0** Module-level side effects in `src/server.py` — `Config.from_env()`,
   `PGStorage`, `Embedder`, `FactExtractor` are no longer constructed at
