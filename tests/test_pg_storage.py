@@ -51,11 +51,61 @@ NOW = datetime(2026, 3, 24, 12, 0, 0, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 
 class TestConnect:
+    def test_probe_has_statement_deadline(self):
+        import src.storage.postgres as mod
+
+        with patch.object(mod.psycopg, 'connect') as connect:
+            assert mod._probe_connection('postgresql://u:secret@host/db') == 0
+        assert connect.call_args.kwargs['connect_timeout'] == 5
+        assert 'statement_timeout=5000' in connect.call_args.kwargs['options']
+        assert connect.call_args.kwargs['autocommit'] is True
+        connect.return_value.__enter__.return_value.execute.assert_called_once_with('SELECT 1')
+
+    def test_probe_execution_is_bounded_and_redacted(self, monkeypatch, capfd):
+        import sys
+        import time
+        import src.storage.postgres as mod
+
+        monkeypatch.setattr(mod, '_PROBE_TIMEOUT', 0.1)
+        monkeypatch.setattr(mod, '_PROBE_COMMAND', [sys.executable, '-c',
+            'import sys,time; sys.stderr.write("secret DSN"); sys.stderr.flush(); time.sleep(60)'])
+        start = time.monotonic()
+        with patch.object(mod, 'ConnectionPool') as pool:
+            with pytest.raises(ConnectionError, match='probe timed out') as error:
+                PGStorage('postgresql://u:secret@host/db').connect()
+        assert time.monotonic() - start < 3
+        assert 'secret' not in str(error.value)
+        pool.assert_not_called()
+        assert capfd.readouterr() == ('', '')
+
+    def test_auth_failure_is_bounded_and_redacted_before_pool_start(self):
+        storage = PGStorage("postgresql://user:secret@localhost/db")
+        with patch("src.storage.postgres.subprocess.run", return_value=MagicMock(returncode=2)) as probe, \
+             patch("src.storage.postgres.ConnectionPool") as pool:
+            with pytest.raises(ConnectionError, match="authentication failed") as error:
+                storage.connect()
+        assert 'secret' not in str(error.value)
+        assert probe.call_args.kwargs['timeout'] == 10
+        assert 'secret' not in str(probe.call_args.args)
+        assert probe.call_args.kwargs['input'] == storage._pg_url
+        pool.assert_not_called()
+        assert storage._pool is None
+
+    def test_network_failure_is_redacted_before_pool_start(self):
+        storage = PGStorage("postgresql://user:secret@localhost/db")
+        with patch("src.storage.postgres.subprocess.run", return_value=MagicMock(returncode=3)), \
+             patch("src.storage.postgres.ConnectionPool") as pool:
+            with pytest.raises(ConnectionError, match="connection failed") as error:
+                storage.connect()
+        assert 'secret' not in str(error.value)
+        pool.assert_not_called()
+
     def test_connect_creates_pool(self):
         """connect() instantiates ConnectionPool with the right URL and size limits."""
         from psycopg.rows import dict_row
         storage = PGStorage("postgresql://user:pass@localhost/db")
-        with patch("src.storage.postgres.ConnectionPool") as MockPool:
+        with patch("src.storage.postgres.subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("src.storage.postgres.ConnectionPool") as MockPool:
             storage.connect()
             _, kwargs = MockPool.call_args
             assert MockPool.call_args[0][0] == "postgresql://user:pass@localhost/db"
@@ -66,9 +116,36 @@ class TestConnect:
     def test_connect_assigns_pool(self):
         """connect() sets _pool on the instance."""
         storage = PGStorage("postgresql://user:pass@localhost/db")
-        with patch("src.storage.postgres.ConnectionPool") as MockPool:
+        with patch("src.storage.postgres.subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("src.storage.postgres.ConnectionPool") as MockPool:
             storage.connect()
         assert storage._pool is MockPool.return_value
+
+    @pytest.mark.parametrize('message,code', [
+        ('password authentication failed; secret DSN', 2),
+        ('connection refused; secret DSN', 3),
+        ('canceling statement due to statement timeout; secret DSN', 3),
+    ])
+    def test_probe_classifies_failures_without_reporting_driver_text(self, message, code, capsys):
+        import src.storage.postgres as mod
+
+        with patch.object(mod.psycopg, 'connect', side_effect=mod.psycopg.OperationalError(message)):
+            assert mod._probe_connection('postgresql://u:secret@host/db') == code
+        assert capsys.readouterr() == ('', '')
+
+    def test_execution_statement_timeout_closes_probe(self):
+        import src.storage.postgres as mod
+
+        with patch.object(mod.psycopg, 'connect') as connect:
+            connect.return_value.__enter__.return_value.execute.side_effect = mod.psycopg.errors.QueryCanceled('secret DSN')
+            assert mod._probe_connection('postgresql://u:secret@host/db') == 3
+        connect.return_value.__exit__.assert_called_once()
+
+    def test_probe_spawn_failure_is_redacted(self):
+        with patch('src.storage.postgres.subprocess.run', side_effect=OSError('secret DSN')):
+            with pytest.raises(ConnectionError, match='connection failed') as error:
+                PGStorage('postgresql://u:secret@host/db').connect()
+        assert 'secret' not in str(error.value)
 
 
 # ---------------------------------------------------------------------------
@@ -577,3 +654,11 @@ class TestTruncate:
         """truncate() always commits."""
         pg.truncate()
         pg._conn.commit.assert_called_once()
+
+
+def test_probe_child_runs_in_isolated_mode():
+    import sys
+
+    import src.storage.postgres as mod
+
+    assert mod._PROBE_COMMAND[:2] == [sys.executable, '-I']
