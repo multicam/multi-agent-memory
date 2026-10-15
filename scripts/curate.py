@@ -39,9 +39,16 @@ def main():
         sys.exit(1)
 
     pg = PGStorage(config.pg_url)
-    pg.connect()
-
     try:
+        try:
+            pg.connect()
+        except ConnectionError:
+            print(
+                "ERROR: PostgreSQL connection/authentication failed; "
+                "check PG_URL in the service EnvironmentFile",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _run_curation(config, pg, args)
     finally:
         pg.close()

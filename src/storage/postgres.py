@@ -1,6 +1,8 @@
 """PostgreSQL storage layer with connection pooling."""
 
 import json
+import subprocess
+import sys
 import uuid
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -9,6 +11,27 @@ from datetime import datetime
 import psycopg
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+
+_PROBE_TIMEOUT = 10
+_PROBE_COMMAND = [sys.executable, '-I', __file__]
+
+
+def _probe_connection(pg_url: str) -> int:
+    """Child probe: return only a classification, never driver error text."""
+    try:
+        with psycopg.connect(
+            pg_url, connect_timeout=5, autocommit=True,
+            options='-c default_transaction_read_only=on -c statement_timeout=5000',
+        ) as conn:
+            conn.execute('SELECT 1')
+        return 0
+    except psycopg.Error as error:
+        auth_failed = (
+            (error.sqlstate or '').startswith('28')
+            or 'password authentication failed' in str(error).lower()
+        )
+        return 2 if auth_failed else 3
 
 
 def _embedding_to_str(emb: list[float] | None) -> str | None:
@@ -50,6 +73,26 @@ class PGStorage:
         self._conn: psycopg.Connection | None = None
 
     def connect(self) -> None:
+        # Pool construction returns before authentication and retries in worker
+        # threads, hiding bad credentials behind repeated logs and PoolTimeout.
+        # A child bounds the whole probe, including execution/socket stalls.
+        # DSN travels only on stdin; discard all child diagnostics.
+        try:
+            probe = subprocess.run(
+                _PROBE_COMMAND, input=self._pg_url, text=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=_PROBE_TIMEOUT,
+            )
+        except (subprocess.TimeoutExpired, OSError) as error:
+            reason = 'probe timed out' if isinstance(error, subprocess.TimeoutExpired) else 'connection failed'
+            raise ConnectionError(
+                f"PostgreSQL {reason}; check PG_URL in the service EnvironmentFile"
+            ) from None
+        if probe.returncode:
+            reason = 'authentication failed' if probe.returncode == 2 else 'connection failed'
+            raise ConnectionError(
+                f"PostgreSQL {reason}; check PG_URL in the service EnvironmentFile"
+            ) from None
         self._pool = ConnectionPool(
             self._pg_url,
             min_size=2,
@@ -462,3 +505,7 @@ def rrf_merge(
         results.append(doc)
 
     return results
+
+
+if __name__ == '__main__':
+    sys.exit(_probe_connection(sys.stdin.read()))

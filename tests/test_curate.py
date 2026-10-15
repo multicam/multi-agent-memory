@@ -8,6 +8,23 @@ from unittest.mock import MagicMock, patch
 class TestCurateConnectionCleanup:
     """curate.py must close PG pool even on exceptions."""
 
+    def test_connection_failure_exits_without_curation_or_secret_output(self, capsys):
+        import scripts.curate as mod
+
+        config = MagicMock(anthropic_api_key="test-key")
+        pg = MagicMock()
+        pg.connect.side_effect = ConnectionError("PostgreSQL authentication failed; check PG_URL")
+        with patch.object(mod.Config, "from_env", return_value=config), \
+             patch.object(mod, "PGStorage", return_value=pg), \
+             patch.object(mod, "_run_curation") as curate, \
+             patch("sys.argv", ["curate.py"]):
+            with pytest.raises(SystemExit) as error:
+                mod.main()
+        assert error.value.code == 1
+        assert "authentication failed" in capsys.readouterr().err
+        pg.close.assert_called_once()
+        curate.assert_not_called()
+
     def test_pg_closed_on_llm_exception(self):
         """pg.close() is called even when the Anthropic API raises."""
         import scripts.curate as mod
